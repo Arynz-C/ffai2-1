@@ -568,93 +568,78 @@ serve(async (req) => {
           );
         }
 
-        // Create stream for vision response
-        const stream = new ReadableStream({
-          async start(controller) {
-            const reader = response.body?.getReader();
-            if (!reader) {
-              controller.enqueue(new TextEncoder().encode('data: {"error":"No response stream"}\n\n'));
-              controller.close();
-              return;
+        // Collect the full response from the stream
+        const reader = response.body?.getReader();
+        if (!reader) {
+          return new Response(
+            JSON.stringify({ error: 'No response stream' }),
+            { 
+              status: 500, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
             }
+          );
+        }
 
-            let buffer = '';
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+        let buffer = '';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
             
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                
-                if (done) {
-                  const finalData = JSON.stringify({ 
-                    type: 'chunk', 
-                    content: '',
-                    done: true
-                  }) + '\n';
-                  controller.enqueue(new TextEncoder().encode(finalData));
-                  console.log('Vision stream completed successfully');
-                  break;
-                }
+            if (done) break;
 
-                const chunk = new TextDecoder().decode(value);
-                buffer += chunk;
-                
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                
-                for (const line of lines) {
-                  if (line.trim()) {
-                    try {
-                      const data = JSON.parse(line.trim());
-                      
-                      // Handle chat API response format
-                      if (data.message?.content) {
-                        const streamData = JSON.stringify({ 
-                          type: 'chunk', 
-                          content: data.message.content,
-                          done: false
-                        }) + '\n';
-                        controller.enqueue(new TextEncoder().encode(streamData));
-                      }
-                      
-                      if (data.done) {
-                        console.log('Vision response completed from Ollama Cloud');
-                        return;
-                      }
-                    } catch (e) {
-                      const errorMessage = e instanceof Error ? e.message : 'Unknown error';
-                      console.log('JSON parse error for vision line:', line, 'Error:', errorMessage);
-                      continue;
-                    }
+            const chunk = decoder.decode(value);
+            buffer += chunk;
+            
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const data = JSON.parse(line.trim());
+                  
+                  // Accumulate response content
+                  if (data.message?.content) {
+                    fullResponse += data.message.content;
                   }
+                  
+                  if (data.done) {
+                    console.log('Vision response completed from Ollama Cloud');
+                    break;
+                  }
+                } catch (e) {
+                  const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+                  console.log('JSON parse error for vision line:', line, 'Error:', errorMessage);
+                  continue;
                 }
-              }
-            } catch (error) {
-              console.error('Vision stream error:', error);
-              const errorData = JSON.stringify({ 
-                type: 'error', 
-                content: 'Vision stream error occurred',
-                done: true
-              }) + '\n';
-              controller.enqueue(new TextEncoder().encode(errorData));
-            } finally {
-              try {
-                controller.close();
-              } catch (e) {
-                console.log('Vision controller already closed');
               }
             }
           }
-        });
+        } catch (error) {
+          console.error('Vision stream error:', error);
+          return new Response(
+            JSON.stringify({ 
+              error: 'Vision stream error occurred' 
+            }),
+            { 
+              status: 500, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            }
+          );
+        }
 
-        return new Response(stream, {
-          headers: { 
-            ...corsHeaders, 
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Transfer-Encoding': 'chunked'
+        // Return the complete response as JSON
+        return new Response(
+          JSON.stringify({ 
+            response: fullResponse 
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           }
-        });
+        );
       } catch (fetchError) {
         console.error('Fetch error for vision:', fetchError);
         const errorMessage = fetchError instanceof Error ? fetchError.message : 'Unknown error';
