@@ -519,8 +519,8 @@ serve(async (req) => {
         );
       }
 
-      // Always use gemma3:4b for vision
-      const visionModel = 'gemma3:4b';
+      // Always use qwen3-vl:235b-cloud for vision
+      const visionModel = 'qwen3-vl:235b-cloud';
       console.log(`Making vision request to Ollama Cloud API with model: ${visionModel}`);
       
       // Extract base64 data from data URL
@@ -766,8 +766,8 @@ serve(async (req) => {
         JSON.stringify({ error: 'Failed to parse Ollama Cloud response' }),
         { 
           status: 500, 
-        }          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        }
       );
     }
 

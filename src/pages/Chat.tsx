@@ -242,7 +242,7 @@ export const Chat = () => {
     let base64Image = null;
     
     if (image) {
-      targetModel = "gemma3:4b"; // Keep using Gemma for vision
+      targetModel = "qwen3-vl:235b-cloud"; // Vision model
       console.log('🖼️ Image detected, switching to vision model:', targetModel);
       
       // Convert image to base64
