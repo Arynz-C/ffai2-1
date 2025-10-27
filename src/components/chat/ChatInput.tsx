@@ -1,6 +1,6 @@
 // Chat input component
 import { useState, useEffect, useRef } from "react";
-import { Send, Settings, Calculator, Search, Globe, Trash2, Square, X, Plus, Image, Upload, Lightbulb } from "lucide-react";
+import { Send, Settings, Calculator, Search, Globe, Trash2, Square, X, Plus, Image, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -20,16 +20,13 @@ interface ChatInputProps {
 
 export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled = false, isGenerating = false }: ChatInputProps) => {
   const [message, setMessage] = useState("");
-  const [selectedTool, setSelectedTool] = useState<'search' | 'calculator' | 'web' | 'think' | null>(null);
+  const [selectedTool, setSelectedTool] = useState<'search' | 'calculator' | 'web' | null>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-detect tool commands and trigger UI
   useEffect(() => {
-    if (message.startsWith('/pikir ')) {
-      setSelectedTool('think');
-      setMessage(message.replace('/pikir ', '')); // Remove command, keep the query
-    } else if (message.startsWith('/cari ')) {
+    if (message.startsWith('/cari ')) {
       setSelectedTool('search');
       setMessage(message.replace('/cari ', '')); // Remove command, keep the query
     } else if (message.startsWith('/kalkulator ')) {
@@ -60,8 +57,6 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
         finalMessage = `/cari ${finalMessage}`;
       } else if (selectedTool === 'web') {
         finalMessage = `/web ${finalMessage}`;
-      } else if (selectedTool === 'think') {
-        finalMessage = `/pikir ${finalMessage}`;
       }
       
       // If image is selected but no message, provide default message
@@ -83,7 +78,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     }
   };
 
-  const handleToolSelect = (tool: 'calculator' | 'search' | 'web' | 'clear' | 'think') => {
+  const handleToolSelect = (tool: 'calculator' | 'search' | 'web' | 'clear') => {
     if (tool === 'clear') {
       onSendMessage('/clear');
       setMessage("");
@@ -120,9 +115,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
   };
 
   const getPlaceholder = () => {
-    if (selectedTool === 'think') {
-      return "Ketik pertanyaan untuk mode berpikir...";
-    } else if (selectedTool === 'search') {
+    if (selectedTool === 'search') {
       return "Ketik pencarian Anda...";
     } else if (selectedTool === 'calculator') {
       return "Ketik perhitungan Anda... (contoh: 5+5=10)";
@@ -132,16 +125,14 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     return "Message FireFlies...";
   };
 
-  const getToolLabel = (tool: 'search' | 'calculator' | 'web' | 'think') => {
-    if (tool === 'think') return '💡 Mode Berpikir';
+  const getToolLabel = (tool: 'search' | 'calculator' | 'web') => {
     if (tool === 'search') return 'Cari';
     if (tool === 'calculator') return 'Kalkulator';
     if (tool === 'web') return 'Ekstrak Web';
     return '';
   };
 
-  const getToolIcon = (tool: 'search' | 'calculator' | 'web' | 'think') => {
-    if (tool === 'think') return <Lightbulb className="w-4 h-4" />;
+  const getToolIcon = (tool: 'search' | 'calculator' | 'web') => {
     if (tool === 'search') return <Search className="w-4 h-4" />;
     if (tool === 'calculator') return <Calculator className="w-4 h-4" />;
     if (tool === 'web') return <Globe className="w-4 h-4" />;
@@ -201,10 +192,6 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="bg-background border border-border shadow-lg z-50">
-                  <DropdownMenuItem onClick={() => handleToolSelect('think')}>
-                    <Lightbulb className="w-4 h-4 mr-2" />
-                    💡 Mode Berpikir
-                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleToolSelect('search')}>
                     <Search className="w-4 h-4 mr-2" />
                     Pencarian web

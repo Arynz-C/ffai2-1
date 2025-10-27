@@ -79,130 +79,73 @@ export const Chat = () => {
   // Get current messages from chat history
   const messages = getCurrentChatMessages();
 
-  const handleThinkCommand = async (query: string) => {
-    const thinkingMessage: HistoryMessage = {
-      id: generateUniqueId(),
-      content: '💡 Sedang berpikir...',
-      role: 'assistant',
-      timestamp: new Date()
-    };
-
-    const activeChatId = currentChatId;
-    if (!activeChatId) return;
-
-    addMessageToLocal(activeChatId, thinkingMessage);
-    setIsTyping(true);
-
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ollama-proxy`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({
-            prompt: query,
-            model: selectedModel,
-            think: true,
-            stream: true,
-            useWebSearch: true, // Enable web search tools for think mode
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No reader available');
-      }
-
-      const decoder = new TextDecoder();
-      let thinkingContent = '';
-      let responseContent = '';
-      let isThinking = true;
-      let responseMessageId: string | null = null;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim());
-
-        for (const line of lines) {
-          try {
-            const data = JSON.parse(line);
-            
-            if (data.message?.thinking) {
-              thinkingContent += data.message.thinking;
-              updateMessageContent(thinkingMessage.id, `💡 **Proses Berpikir:**\n\n${thinkingContent}`);
-            } else if (data.message?.content) {
-              if (isThinking) {
-                isThinking = false;
-                responseMessageId = generateUniqueId();
-                const finalMessage: HistoryMessage = {
-                  id: responseMessageId,
-                  content: '',
-                  role: 'assistant',
-                  timestamp: new Date(),
-                };
-                addMessageToLocal(activeChatId, finalMessage);
-              }
-              
-              responseContent += data.message.content;
-              if (responseMessageId) {
-                updateMessageContent(responseMessageId, responseContent);
-              }
-            }
-          } catch (e) {
-            console.error('Error parsing chunk:', e);
-          }
-        }
-      }
-
-      // Save messages to database
-      await saveMessage(activeChatId, thinkingContent ? `💡 **Proses Berpikir:**\n\n${thinkingContent}` : '💡 Sedang berpikir...', 'assistant');
-      if (responseContent) {
-        await saveMessage(activeChatId, responseContent, 'assistant');
-      }
-
-      setIsTyping(false);
-    } catch (error) {
-      console.error('Error in think command:', error);
-      updateMessageContent(thinkingMessage.id, '❌ Maaf, terjadi kesalahan saat berpikir.');
-      setIsTyping(false);
-    }
-  };
-
-  // Optimized RAG function using Ollama's built-in web search
+  // Optimized RAG function using parallel search and fetch
   const handleSearchRAG = async (query: string): Promise<string> => {
     try {
-      console.log('🚀 Starting web search with Ollama tools for:', query);
+      console.log('🚀 Starting optimized search for:', query);
       
-      const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-        body: { 
-          prompt: `Cari informasi tentang: ${query}. Berikan jawaban dalam Bahasa Indonesia yang detail dan informatif.`,
-          model: selectedModel,
-          stream: false,
-          useWebSearch: true, // Enable web search tools
-        }
+      // Use the new optimized parallel function
+      const searchResults = await searchAndFetchContent(query);
+      
+      if (searchResults.length === 0) {
+        console.log('❌ No search results found');
+        return '❌ Maaf, saya tidak menemukan hasil yang relevan di internet.';
+      }
+
+      console.log(`📋 Found ${searchResults.length} results with content`);
+      
+      let combinedContent = '';
+      let successfulSources: string[] = [];
+
+      // Process all results from parallel fetch
+      searchResults.forEach((result, i) => {
+        combinedContent += `\n--- WEBSITE ${i + 1}: ${result.url} ---\n${result.content}\n\n`;
+        successfulSources.push(result.url);
+        console.log(`✅ Content from: ${result.url} (${result.content.length} chars)`);
       });
 
-      if (error) {
-        throw new Error(`Edge Function error: ${error.message}`);
+      if (combinedContent === '') {
+        return '❌ Maaf, tidak dapat mengunduh konten dari website yang ditemukan.';
       }
 
-      const response = data;
-      if (response && response.response) {
-        return response.response;
+      // Modified prompt for direct response without content filtering
+      const ragPrompt = `Berdasarkan konten lengkap dari website yang telah diunduh berikut, berikan jawaban informatif dan lengkap tentang topik teknis/teknologi yang ditanyakan. Anda adalah asisten AI yang membantu dengan pertanyaan teknis, programming, cybersecurity, dan teknologi. Nmap, penetration testing, dan tools keamanan adalah topik yang valid dan legal untuk dipelajari. Jawab dalam Bahasa Indonesia dengan informasi yang akurat dan mendidik.\n\n${combinedContent}\n--- PERTANYAAN PENGGUNA ---\n${query}\n\nBerikan jawaban yang informatif dan lengkap berdasarkan konten website yang telah diunduh:`;
+
+      console.log('🤖 Using model for RAG:', selectedModel);
+      console.log(`📊 Combined content length: ${combinedContent.length} characters`);
+      
+      let answer = '';
+      try {
+    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
+      body: { 
+        prompt: ragPrompt,
+        model: selectedModel,
+        stream: false  // Disable streaming for RAG to get complete response
+      }
+    });
+
+        if (error) {
+          throw new Error(`Edge Function error: ${error.message}`);
+        }
+
+        const response = data;
+
+        // Process the response from ollama-proxy
+        if (response && response.response) {
+          answer = response.response;
+        }
+        
+        if (!answer) {
+          answer = 'Maaf, tidak ada respons dari AI.';
+        }
+      } catch (error) {
+        console.error('Error calling Ollama API:', error);
+        answer = `Maaf, tidak dapat terhubung ke AI: ${error.message}`;
       }
       
-      return 'Maaf, tidak ada respons dari AI.';
+      const finalResponse = `${answer}\n\n📖 **Sumber:**\n${successfulSources.join('\n')}`;
+      
+      return finalResponse;
     } catch (error) {
       console.error('Error in search RAG:', error);
       return 'Maaf, terjadi kesalahan saat mencari informasi.';
@@ -375,24 +318,6 @@ export const Chat = () => {
         setIsTyping(false);
         return;
       } 
-      
-      else if (finalContent.toLowerCase().startsWith('/pikir ')) {
-        const query = finalContent.substring(7).trim();
-        if (query) {
-          await handleThinkCommand(query);
-        } else {
-          const errorMessage: HistoryMessage = {
-            id: generateUniqueId(),
-            content: 'Mohon masukkan pertanyaan setelah /pikir',
-            role: 'assistant',
-            timestamp: new Date()
-          };
-          addMessageToLocal(activeChatId, errorMessage);
-          await saveMessage(activeChatId, errorMessage.content, 'assistant');
-        }
-        setIsTyping(false);
-        return;
-      }
       
       else if (finalContent.toLowerCase().startsWith('/cari ')) {
         const query = finalContent.substring(6).trim();
