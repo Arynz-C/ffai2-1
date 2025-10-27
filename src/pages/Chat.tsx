@@ -502,22 +502,33 @@ export const Chat = () => {
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;
             
-            // Process complete JSON lines
+            // Split by newlines to process complete JSON objects
             const lines = buffer.split('\n');
+            // Keep the last incomplete line in the buffer
             buffer = lines.pop() || '';
             
             for (const line of lines) {
-              if (line.trim()) {
-                try {
-                  const data = JSON.parse(line);
-                  if (data.message?.content) {
-                    fullResponse += data.message.content;
-                    // Update message in real-time
-                    updateMessageContent(aiMessageId, fullResponse);
-                  }
-                } catch (e) {
-                  // Skip invalid JSON
-                  console.log('Skipping invalid JSON line:', line);
+              const trimmedLine = line.trim();
+              if (!trimmedLine) continue;
+              
+              try {
+                const data = JSON.parse(trimmedLine);
+                
+                // Ollama streaming format: { "message": { "content": "text" }, "done": false }
+                if (data.message?.content) {
+                  fullResponse += data.message.content;
+                  updateMessageContent(aiMessageId, fullResponse);
+                }
+                
+                // Check if streaming is complete
+                if (data.done === true) {
+                  console.log('✅ Streaming completed');
+                  break;
+                }
+              } catch (e) {
+                // Only log if it's not an empty line
+                if (trimmedLine) {
+                  console.warn('Failed to parse JSON:', trimmedLine, e);
                 }
               }
             }
@@ -526,13 +537,13 @@ export const Chat = () => {
           // Process any remaining buffer
           if (buffer.trim()) {
             try {
-              const data = JSON.parse(buffer);
+              const data = JSON.parse(buffer.trim());
               if (data.message?.content) {
                 fullResponse += data.message.content;
                 updateMessageContent(aiMessageId, fullResponse);
               }
             } catch (e) {
-              console.log('Skipping invalid final buffer:', buffer);
+              console.warn('Failed to parse final buffer:', buffer);
             }
           }
         }

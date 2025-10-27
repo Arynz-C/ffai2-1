@@ -691,7 +691,14 @@ serve(async (req) => {
       content: prompt
     });
     
-    console.log(`📝 Sending to Ollama Cloud: ${messages.length} messages, model: ${model}`);
+    // Ensure cloud model has -cloud suffix if not already present
+    let cloudModel = model;
+    if (!model.endsWith('-cloud')) {
+      cloudModel = `${model}-cloud`;
+      console.log(`⚠️ Model name adjusted for cloud: ${model} -> ${cloudModel}`);
+    }
+    
+    console.log(`📝 Sending to Ollama Cloud: ${messages.length} messages, model: ${cloudModel}`);
     
     const response = await fetch('https://ollama.com/api/chat', {
       method: 'POST',
@@ -700,7 +707,7 @@ serve(async (req) => {
         'Authorization': `Bearer ${ollamaApiKey}`
       },
       body: JSON.stringify({
-        model,
+        model: cloudModel,
         messages,
         stream: true,
       }),
@@ -710,32 +717,38 @@ serve(async (req) => {
       console.error(`Ollama API error: ${response.status} ${response.statusText}`);
       const errorText = await response.text();
       console.error('Ollama error response:', errorText);
+      
+      // Provide helpful error messages
+      let errorMessage = `Ollama API error: ${response.status}`;
+      if (response.status === 502) {
+        errorMessage = 'Model tidak tersedia atau sedang bermasalah. Pastikan model cloud tersedia.';
+      } else if (response.status === 401) {
+        errorMessage = 'API key tidak valid. Periksa OLLAMA_API_KEY.';
+      } else if (response.status === 404) {
+        errorMessage = `Model "${cloudModel}" tidak ditemukan. Gunakan model cloud yang valid.`;
+      }
+      
       return new Response(
         JSON.stringify({ 
-          error: `Ollama API error: ${response.status} ${response.statusText} - ${errorText}` 
+          error: errorMessage,
+          details: errorText
         }),
         { 
-          status: 500, 
+          status: response.status, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         }
       );
     }
 
-    // Return the stream directly to the client with proper CORS headers
+    // Stream the response with proper headers
     console.log('✅ Streaming response from Ollama Cloud');
     
-    // Create a TransformStream to pass through the response with CORS headers
-    const { readable, writable } = new TransformStream();
-    
-    // Pipe the response body through the transform stream
-    response.body?.pipeTo(writable);
-    
-    return new Response(readable, {
+    return new Response(response.body, {
       headers: {
         ...corsHeaders,
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/plain',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        'X-Content-Type-Options': 'nosniff',
       },
     });
 
