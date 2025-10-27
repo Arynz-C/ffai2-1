@@ -35,8 +35,8 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, model = 'FireFlies:latest', action, image, stream = true, think = false } = requestBody;
-    console.log(`🤖 Received model: ${model}, action: ${action}, think: ${think}`);
+    const { prompt, model = 'FireFlies:latest', action, image, stream = true, think = false, useWebSearch = false } = requestBody;
+    console.log(`🤖 Received model: ${model}, action: ${action}, think: ${think}, useWebSearch: ${useWebSearch}`);
     
     // Get Ollama API Key for Cloud API
     const ollamaApiKey = Deno.env.get('OLLAMA_API_KEY');
@@ -700,18 +700,62 @@ serve(async (req) => {
     
     console.log(`📝 Sending to Ollama Cloud: ${messages.length} messages, model: ${cloudModel}`);
     
+    // Define web search and fetch tools
+    const webSearchTool = {
+      type: 'function',
+      function: {
+        name: 'webSearch',
+        description: 'Performs a web search for the given query.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query string.' },
+            max_results: {
+              type: 'number',
+              description: 'The maximum number of results to return per query (default 3).',
+            },
+          },
+          required: ['query'],
+        },
+      },
+    };
+
+    const webFetchTool = {
+      type: 'function',
+      function: {
+        name: 'webFetch',
+        description: 'Fetches a single page by URL.',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'A single URL to fetch.' },
+          },
+          required: ['url'],
+        },
+      },
+    };
+
+    // Build request body
+    const ollamaRequestBody: any = {
+      model: cloudModel,
+      messages,
+      stream: stream,
+      think: think,
+    };
+
+    // Add tools if web search is enabled
+    if (useWebSearch) {
+      ollamaRequestBody.tools = [webSearchTool, webFetchTool];
+      console.log('🔧 Web search tools enabled');
+    }
+    
     const response = await fetch('https://ollama.com/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${ollamaApiKey}`
       },
-      body: JSON.stringify({
-        model: cloudModel,
-        messages,
-        stream: stream,  // Use stream parameter from request
-        think: think,  // Enable thinking mode if requested
-      }),
+      body: JSON.stringify(ollamaRequestBody),
     });
 
     if (!response.ok) {

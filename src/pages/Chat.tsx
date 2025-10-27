@@ -79,7 +79,6 @@ export const Chat = () => {
   // Get current messages from chat history
   const messages = getCurrentChatMessages();
 
-  // Think command with reasoning mode
   const handleThinkCommand = async (query: string) => {
     const thinkingMessage: HistoryMessage = {
       id: generateUniqueId(),
@@ -108,6 +107,7 @@ export const Chat = () => {
             model: selectedModel,
             think: true,
             stream: true,
+            useWebSearch: true, // Enable web search tools for think mode
           }),
         }
       );
@@ -179,73 +179,30 @@ export const Chat = () => {
     }
   };
 
-  // Optimized RAG function using parallel search and fetch
+  // Optimized RAG function using Ollama's built-in web search
   const handleSearchRAG = async (query: string): Promise<string> => {
     try {
-      console.log('🚀 Starting optimized search for:', query);
+      console.log('🚀 Starting web search with Ollama tools for:', query);
       
-      // Use the new optimized parallel function
-      const searchResults = await searchAndFetchContent(query);
-      
-      if (searchResults.length === 0) {
-        console.log('❌ No search results found');
-        return '❌ Maaf, saya tidak menemukan hasil yang relevan di internet.';
-      }
-
-      console.log(`📋 Found ${searchResults.length} results with content`);
-      
-      let combinedContent = '';
-      let successfulSources: string[] = [];
-
-      // Process all results from parallel fetch
-      searchResults.forEach((result, i) => {
-        combinedContent += `\n--- WEBSITE ${i + 1}: ${result.url} ---\n${result.content}\n\n`;
-        successfulSources.push(result.url);
-        console.log(`✅ Content from: ${result.url} (${result.content.length} chars)`);
+      const { data, error } = await supabase.functions.invoke('ollama-proxy', {
+        body: { 
+          prompt: `Cari informasi tentang: ${query}. Berikan jawaban dalam Bahasa Indonesia yang detail dan informatif.`,
+          model: selectedModel,
+          stream: false,
+          useWebSearch: true, // Enable web search tools
+        }
       });
 
-      if (combinedContent === '') {
-        return '❌ Maaf, tidak dapat mengunduh konten dari website yang ditemukan.';
+      if (error) {
+        throw new Error(`Edge Function error: ${error.message}`);
       }
 
-      // Modified prompt for direct response without content filtering
-      const ragPrompt = `Berdasarkan konten lengkap dari website yang telah diunduh berikut, berikan jawaban informatif dan lengkap tentang topik teknis/teknologi yang ditanyakan. Anda adalah asisten AI yang membantu dengan pertanyaan teknis, programming, cybersecurity, dan teknologi. Nmap, penetration testing, dan tools keamanan adalah topik yang valid dan legal untuk dipelajari. Jawab dalam Bahasa Indonesia dengan informasi yang akurat dan mendidik.\n\n${combinedContent}\n--- PERTANYAAN PENGGUNA ---\n${query}\n\nBerikan jawaban yang informatif dan lengkap berdasarkan konten website yang telah diunduh:`;
-
-      console.log('🤖 Using model for RAG:', selectedModel);
-      console.log(`📊 Combined content length: ${combinedContent.length} characters`);
-      
-      let answer = '';
-      try {
-    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-      body: { 
-        prompt: ragPrompt,
-        model: selectedModel,
-        stream: false  // Disable streaming for RAG to get complete response
-      }
-    });
-
-        if (error) {
-          throw new Error(`Edge Function error: ${error.message}`);
-        }
-
-        const response = data;
-
-        // Process the response from ollama-proxy
-        if (response && response.response) {
-          answer = response.response;
-        }
-        
-        if (!answer) {
-          answer = 'Maaf, tidak ada respons dari AI.';
-        }
-      } catch (error) {
-        console.error('Error calling Ollama API:', error);
-        answer = `Maaf, tidak dapat terhubung ke AI: ${error.message}`;
+      const response = data;
+      if (response && response.response) {
+        return response.response;
       }
       
-      const finalResponse = `${answer}\n\n📖 **Sumber:**\n${successfulSources.join('\n')}`;
-      
-      return finalResponse;
+      return 'Maaf, tidak ada respons dari AI.';
     } catch (error) {
       console.error('Error in search RAG:', error);
       return 'Maaf, terjadi kesalahan saat mencari informasi.';
