@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 const MODEL_KEY = 'selected_ollama_model';
-const DEFAULT_MODEL = 'qwen3-vl:235b-cloud'; // Default to available Ollama Cloud model
+const DEFAULT_MODEL = 'gpt-oss:120b-cloud'; // Default to stable Ollama Cloud model
 
 interface ModelContextType {
   selectedModel: string;

@@ -740,15 +740,21 @@ serve(async (req) => {
       );
     }
 
-    // Stream the response with proper headers
-    console.log('✅ Streaming response from Ollama Cloud');
+    // Stream the response directly from Ollama
+    console.log('✅ Streaming response from Ollama Cloud - passing through response body');
+    console.log('Response headers:', {
+      contentType: response.headers.get('content-type'),
+      status: response.status,
+      ok: response.ok
+    });
     
+    // Pass through the response body directly
     return new Response(response.body, {
       headers: {
         ...corsHeaders,
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/x-ndjson',
         'Cache-Control': 'no-cache',
-        'X-Content-Type-Options': 'nosniff',
+        'Connection': 'keep-alive',
       },
     });
 

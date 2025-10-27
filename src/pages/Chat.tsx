@@ -493,11 +493,15 @@ export const Chat = () => {
           }
           
           let buffer = '';
+          let isDone = false;
           
-          while (true) {
+          while (!isDone) {
             const { done, value } = await reader.read();
             
-            if (done) break;
+            if (done) {
+              console.log('📡 Stream reader finished');
+              break;
+            }
             
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;
@@ -514,21 +518,25 @@ export const Chat = () => {
               try {
                 const data = JSON.parse(trimmedLine);
                 
-                // Ollama streaming format: { "message": { "content": "text" }, "done": false }
+                // Ollama Cloud streaming format: { "model": "...", "message": { "role": "assistant", "content": "text" }, "done": false }
                 if (data.message?.content) {
-                  fullResponse += data.message.content;
+                  const newContent = data.message.content;
+                  fullResponse += newContent;
+                  
+                  // Update UI in real-time
                   updateMessageContent(aiMessageId, fullResponse);
                 }
                 
                 // Check if streaming is complete
                 if (data.done === true) {
-                  console.log('✅ Streaming completed');
+                  console.log('✅ Streaming completed, total length:', fullResponse.length);
+                  isDone = true;
                   break;
                 }
               } catch (e) {
-                // Only log if it's not an empty line
-                if (trimmedLine) {
-                  console.warn('Failed to parse JSON:', trimmedLine, e);
+                // Only log non-empty lines that failed to parse
+                if (trimmedLine.length > 0) {
+                  console.warn('⚠️ Failed to parse line:', trimmedLine.substring(0, 100));
                 }
               }
             }
@@ -543,8 +551,13 @@ export const Chat = () => {
                 updateMessageContent(aiMessageId, fullResponse);
               }
             } catch (e) {
-              console.warn('Failed to parse final buffer:', buffer);
+              console.warn('⚠️ Failed to parse final buffer');
             }
+          }
+          
+          // Ensure we have some response
+          if (!fullResponse || fullResponse.trim().length === 0) {
+            throw new Error('Tidak ada respons dari AI. Silakan coba lagi.');
           }
         }
 
@@ -555,8 +568,25 @@ export const Chat = () => {
 
         // No credit deduction needed - subscription based
       } catch (fetchError) {
-        console.error('Edge Function error:', fetchError);
-        throw new Error(`Cannot connect to AI: ${fetchError.message}`);
+        console.error('🔴 Edge Function error:', fetchError);
+        
+        // Show user-friendly error message
+        let errorMsg = 'Tidak dapat terhubung ke AI. ';
+        if (fetchError.message.includes('502')) {
+          errorMsg += 'Server AI sedang bermasalah. Silakan coba lagi dalam beberapa saat.';
+        } else if (fetchError.message.includes('timeout')) {
+          errorMsg += 'Koneksi timeout. Silakan coba lagi.';
+        } else if (fetchError.message.includes('tidak ada respons')) {
+          errorMsg += 'AI tidak memberikan respons. Silakan coba lagi.';
+        } else {
+          errorMsg += 'Silakan coba lagi atau gunakan /cari [query] untuk pencarian web.';
+        }
+        
+        toast({
+          title: "Error",
+          description: errorMsg,
+          variant: "destructive"
+        });
       } finally {
         setIsGenerating(false);
         setAbortController(null);
