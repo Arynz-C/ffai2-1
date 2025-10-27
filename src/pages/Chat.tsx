@@ -79,6 +79,106 @@ export const Chat = () => {
   // Get current messages from chat history
   const messages = getCurrentChatMessages();
 
+  // Think command with reasoning mode
+  const handleThinkCommand = async (query: string) => {
+    const thinkingMessage: HistoryMessage = {
+      id: generateUniqueId(),
+      content: '💡 Sedang berpikir...',
+      role: 'assistant',
+      timestamp: new Date()
+    };
+
+    const activeChatId = currentChatId;
+    if (!activeChatId) return;
+
+    addMessageToLocal(activeChatId, thinkingMessage);
+    setIsTyping(true);
+
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ollama-proxy`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            prompt: query,
+            model: selectedModel,
+            think: true,
+            stream: true,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No reader available');
+      }
+
+      const decoder = new TextDecoder();
+      let thinkingContent = '';
+      let responseContent = '';
+      let isThinking = true;
+      let responseMessageId: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+            
+            if (data.message?.thinking) {
+              thinkingContent += data.message.thinking;
+              updateMessageContent(thinkingMessage.id, `💡 **Proses Berpikir:**\n\n${thinkingContent}`);
+            } else if (data.message?.content) {
+              if (isThinking) {
+                isThinking = false;
+                responseMessageId = generateUniqueId();
+                const finalMessage: HistoryMessage = {
+                  id: responseMessageId,
+                  content: '',
+                  role: 'assistant',
+                  timestamp: new Date(),
+                };
+                addMessageToLocal(activeChatId, finalMessage);
+              }
+              
+              responseContent += data.message.content;
+              if (responseMessageId) {
+                updateMessageContent(responseMessageId, responseContent);
+              }
+            }
+          } catch (e) {
+            console.error('Error parsing chunk:', e);
+          }
+        }
+      }
+
+      // Save messages to database
+      await saveMessage(activeChatId, thinkingContent ? `💡 **Proses Berpikir:**\n\n${thinkingContent}` : '💡 Sedang berpikir...', 'assistant');
+      if (responseContent) {
+        await saveMessage(activeChatId, responseContent, 'assistant');
+      }
+
+      setIsTyping(false);
+    } catch (error) {
+      console.error('Error in think command:', error);
+      updateMessageContent(thinkingMessage.id, '❌ Maaf, terjadi kesalahan saat berpikir.');
+      setIsTyping(false);
+    }
+  };
+
   // Optimized RAG function using parallel search and fetch
   const handleSearchRAG = async (query: string): Promise<string> => {
     try {
@@ -318,6 +418,24 @@ export const Chat = () => {
         setIsTyping(false);
         return;
       } 
+      
+      else if (finalContent.toLowerCase().startsWith('/pikir ')) {
+        const query = finalContent.substring(7).trim();
+        if (query) {
+          await handleThinkCommand(query);
+        } else {
+          const errorMessage: HistoryMessage = {
+            id: generateUniqueId(),
+            content: 'Mohon masukkan pertanyaan setelah /pikir',
+            role: 'assistant',
+            timestamp: new Date()
+          };
+          addMessageToLocal(activeChatId, errorMessage);
+          await saveMessage(activeChatId, errorMessage.content, 'assistant');
+        }
+        setIsTyping(false);
+        return;
+      }
       
       else if (finalContent.toLowerCase().startsWith('/cari ')) {
         const query = finalContent.substring(6).trim();

@@ -26,7 +26,10 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
 
   // Auto-detect tool commands and trigger UI
   useEffect(() => {
-    if (message.startsWith('/cari ')) {
+    if (message.startsWith('/pikir ')) {
+      // Don't auto-select tool for /pikir, just let it pass through
+      return;
+    } else if (message.startsWith('/cari ')) {
       setSelectedTool('search');
       setMessage(message.replace('/cari ', '')); // Remove command, keep the query
     } else if (message.startsWith('/kalkulator ')) {

@@ -35,8 +35,8 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, model = 'FireFlies:latest', action, image, stream = true } = requestBody;
-    console.log(`🤖 Received model: ${model}, action: ${action}`);
+    const { prompt, model = 'FireFlies:latest', action, image, stream = true, think = false } = requestBody;
+    console.log(`🤖 Received model: ${model}, action: ${action}, think: ${think}`);
     
     // Get Ollama API Key for Cloud API
     const ollamaApiKey = Deno.env.get('OLLAMA_API_KEY');
@@ -710,6 +710,7 @@ serve(async (req) => {
         model: cloudModel,
         messages,
         stream: stream,  // Use stream parameter from request
+        think: think,  // Enable thinking mode if requested
       }),
     });
 
