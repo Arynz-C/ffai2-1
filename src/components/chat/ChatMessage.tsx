@@ -1,6 +1,10 @@
 import { User, Copy, ThumbsUp, ThumbsDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import firefliesLogo from "@/assets/fireflies-logo.png";
+import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import remarkGfm from 'remark-gfm';
 
 interface ChatMessageProps {
   message: {
@@ -49,10 +53,57 @@ export const ChatMessage = ({ message }: ChatMessageProps) => {
           </span>
         </div>
 
-        <div className="prose prose-sm max-w-none text-foreground">
-          <p className={`whitespace-pre-wrap leading-relaxed ${!isUser ? 'stream-text' : ''}`}>
-            {message.content}
-          </p>
+        <div className="prose prose-sm max-w-none dark:prose-invert">
+          {!isUser ? (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                code(props) {
+                  const {children, className, ...rest} = props
+                  const match = /language-(\w+)/.exec(className || '')
+                  const codeString = String(children).replace(/\n$/, '');
+                  
+                  return match ? (
+                    <div className="relative group my-4">
+                      <div className="flex items-center justify-between bg-[#1e1e1e] px-4 py-2 rounded-t-lg border-b border-gray-700">
+                        <span className="text-xs text-gray-400">{match[1]}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => navigator.clipboard.writeText(codeString)}
+                          className="h-6 px-2 text-gray-400 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </Button>
+                      </div>
+                      <SyntaxHighlighter
+                        style={vscDarkPlus as any}
+                        language={match[1]}
+                        PreTag="div"
+                        customStyle={{
+                          marginTop: 0,
+                          borderTopLeftRadius: 0,
+                          borderTopRightRadius: 0,
+                        }}
+                      >
+                        {codeString}
+                      </SyntaxHighlighter>
+                    </div>
+                  ) : (
+                    <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono" {...rest}>
+                      {children}
+                    </code>
+                  );
+                }
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          ) : (
+            <p className="whitespace-pre-wrap leading-relaxed">
+              {message.content}
+            </p>
+          )}
         </div>
 
         {!isUser && (

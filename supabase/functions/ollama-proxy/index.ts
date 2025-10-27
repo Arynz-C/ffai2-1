@@ -702,7 +702,7 @@ serve(async (req) => {
       body: JSON.stringify({
         model,
         messages,
-        stream: false,
+        stream: true,
       }),
     });
 
@@ -721,40 +721,23 @@ serve(async (req) => {
       );
     }
 
-    // Handle non-streaming response from chat API
-    try {
-      const data = await response.json();
-      
-      if (data.message?.content) {
-        console.log('✅ Ollama Cloud response received successfully');
-        return new Response(
-          JSON.stringify({ response: data.message.content }),
-          { 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
-      } else {
-        console.error('Invalid Ollama Cloud response format:', data);
-        return new Response(
-          JSON.stringify({ error: 'Invalid response format from Ollama Cloud' }),
-          { 
-            status: 500, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          }
-        );
-      }
-    } catch (parseError) {
-      console.error('Failed to parse Ollama Cloud response:', parseError);
-      const responseText = await response.text().catch(() => 'Unable to read response');
-      console.error('Raw response:', responseText);
-      return new Response(
-        JSON.stringify({ error: 'Failed to parse Ollama Cloud response' }),
-        { 
-          status: 500, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      );
-    }
+    // Return the stream directly to the client with proper CORS headers
+    console.log('✅ Streaming response from Ollama Cloud');
+    
+    // Create a TransformStream to pass through the response with CORS headers
+    const { readable, writable } = new TransformStream();
+    
+    // Pipe the response body through the transform stream
+    response.body?.pipeTo(writable);
+    
+    return new Response(readable, {
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
 
   } catch (error) {
     console.error('Error in ollama-proxy:', error);

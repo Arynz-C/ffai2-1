@@ -427,8 +427,8 @@ export const Chat = () => {
         const useDirectPrompt = base64Image !== null;
         
         let response: Response;
-        
         let responseData;
+        let fullResponse = '';
         
         if (useDirectPrompt) {
           console.log('🤖 Using direct prompt mode for vision model:', targetModel);
@@ -446,44 +446,94 @@ export const Chat = () => {
             throw new Error(`Edge Function error: ${error.message}`);
           }
           responseData = data;
+          
+          // Handle vision response (non-streaming)
+          if (responseData && responseData.response) {
+            fullResponse = responseData.response;
+            updateMessageContent(aiMessageId, fullResponse);
+          }
         } else {
           // Get chat history for AI context
           const chatHistory = getChatHistoryForAI(activeChatId);
 
-          // Chat mode for text models
-          console.log('🤖 Using chat mode for text model:', targetModel);
-          const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-            body: { 
+          // Chat mode for text models - use streaming
+          console.log('🤖 Using chat mode with streaming for text model:', targetModel);
+          
+          // Use direct fetch for streaming support
+          const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+          const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+          
+          const streamResponse = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({
               prompt: finalContent,
               model: targetModel,
               history: chatHistory.map(msg => ({
                 role: msg.role,
                 content: msg.content
               }))
-            }
+            }),
+            signal: controller.signal,
           });
           
-          if (error) {
-            throw new Error(`Edge Function error: ${error.message}`);
+          if (!streamResponse.ok) {
+            throw new Error(`Streaming error: ${streamResponse.status}`);
           }
-          responseData = data;
-        }
-
-        // Handle the response from ollama-proxy
-        let fullResponse = '';
-
-        if (responseData && responseData.response) {
-          fullResponse = responseData.response;
           
-          // Update message content immediately for non-streaming responses
-          updateMessageContent(aiMessageId, fullResponse);
-        } else {
-          // Handle streaming if implemented in the future
+          // Handle streaming response
+          const reader = streamResponse.body?.getReader();
           const decoder = new TextDecoder();
-
-          // For now, just handle the response as complete
-          if (responseData) {
-            fullResponse = responseData.response || JSON.stringify(responseData);
+          
+          if (!reader) {
+            throw new Error('No stream reader available');
+          }
+          
+          let buffer = '';
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
+            
+            // Process complete JSON lines
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const data = JSON.parse(line);
+                  if (data.message?.content) {
+                    fullResponse += data.message.content;
+                    // Update message in real-time
+                    updateMessageContent(aiMessageId, fullResponse);
+                  }
+                } catch (e) {
+                  // Skip invalid JSON
+                  console.log('Skipping invalid JSON line:', line);
+                }
+              }
+            }
+          }
+          
+          // Process any remaining buffer
+          if (buffer.trim()) {
+            try {
+              const data = JSON.parse(buffer);
+              if (data.message?.content) {
+                fullResponse += data.message.content;
+                updateMessageContent(aiMessageId, fullResponse);
+              }
+            } catch (e) {
+              console.log('Skipping invalid final buffer:', buffer);
+            }
           }
         }
 
