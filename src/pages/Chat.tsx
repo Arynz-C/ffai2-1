@@ -495,15 +495,18 @@ export const Chat = () => {
           let buffer = '';
           let isDone = false;
           
+          console.log('🚀 Starting to read stream...');
+          
           while (!isDone) {
             const { done, value } = await reader.read();
             
             if (done) {
-              console.log('📡 Stream reader finished');
+              console.log('📡 Stream reader finished, total response length:', fullResponse.length);
               break;
             }
             
             const chunk = decoder.decode(value, { stream: true });
+            console.log('📦 Received chunk, size:', chunk.length);
             buffer += chunk;
             
             // Split by newlines to process complete JSON objects
@@ -517,11 +520,18 @@ export const Chat = () => {
               
               try {
                 const data = JSON.parse(trimmedLine);
+                console.log('📨 Parsed data:', { 
+                  hasMessage: !!data.message, 
+                  hasContent: !!data.message?.content,
+                  contentLength: data.message?.content?.length || 0,
+                  done: data.done 
+                });
                 
-                // Ollama Cloud streaming format: { "model": "...", "message": { "role": "assistant", "content": "text" }, "done": false }
-                if (data.message?.content) {
+                // Ollama Cloud streaming format
+                if (data.message?.content && data.message.content.length > 0) {
                   const newContent = data.message.content;
                   fullResponse += newContent;
+                  console.log('✍️ Added content, total length now:', fullResponse.length);
                   
                   // Update UI in real-time
                   updateMessageContent(aiMessageId, fullResponse);
@@ -529,14 +539,17 @@ export const Chat = () => {
                 
                 // Check if streaming is complete
                 if (data.done === true) {
-                  console.log('✅ Streaming completed, total length:', fullResponse.length);
+                  console.log('✅ Streaming marked as done, final length:', fullResponse.length);
                   isDone = true;
                   break;
                 }
               } catch (e) {
-                // Only log non-empty lines that failed to parse
+                // Log parsing errors for debugging
                 if (trimmedLine.length > 0) {
-                  console.warn('⚠️ Failed to parse line:', trimmedLine.substring(0, 100));
+                  console.error('❌ Failed to parse JSON line:', {
+                    lineStart: trimmedLine.substring(0, 100),
+                    error: e instanceof Error ? e.message : 'Unknown error'
+                  });
                 }
               }
             }
@@ -546,19 +559,25 @@ export const Chat = () => {
           if (buffer.trim()) {
             try {
               const data = JSON.parse(buffer.trim());
-              if (data.message?.content) {
+              if (data.message?.content && data.message.content.length > 0) {
                 fullResponse += data.message.content;
+                console.log('📝 Added final buffer content, total length:', fullResponse.length);
                 updateMessageContent(aiMessageId, fullResponse);
               }
             } catch (e) {
-              console.warn('⚠️ Failed to parse final buffer');
+              console.error('❌ Failed to parse final buffer:', e);
             }
           }
           
+          console.log('🏁 Stream processing complete. Final response length:', fullResponse.length);
+          
           // Ensure we have some response
           if (!fullResponse || fullResponse.trim().length === 0) {
-            throw new Error('Tidak ada respons dari AI. Silakan coba lagi.');
+            console.error('❌ Empty response received from AI');
+            throw new Error('AI tidak memberikan respons. Ini mungkin karena:\n1. Konten tidak relevan dengan model\n2. Server AI sedang sibuk\n3. Model perlu restart\n\nSilakan coba lagi atau gunakan model lain.');
           }
+          
+          console.log('✅ Successfully received response, length:', fullResponse.length);
         }
 
         // Save the complete AI response to database
