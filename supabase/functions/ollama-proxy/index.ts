@@ -35,7 +35,7 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, model = 'FireFlies:latest', action, image } = requestBody;
+    const { prompt, model = 'FireFlies:latest', action, image, stream = true } = requestBody;
     console.log(`🤖 Received model: ${model}, action: ${action}`);
     
     // Get Ollama API Key for Cloud API
@@ -709,7 +709,7 @@ serve(async (req) => {
       body: JSON.stringify({
         model: cloudModel,
         messages,
-        stream: true,
+        stream: stream,  // Use stream parameter from request
       }),
     });
 
@@ -740,23 +740,41 @@ serve(async (req) => {
       );
     }
 
-    // Stream the response directly from Ollama
-    console.log('✅ Streaming response from Ollama Cloud - passing through response body');
-    console.log('Response headers:', {
-      contentType: response.headers.get('content-type'),
-      status: response.status,
-      ok: response.ok
-    });
-    
-    // Pass through the response body directly
-    return new Response(response.body, {
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'application/x-ndjson',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
+    // Handle streaming vs non-streaming response
+    if (stream) {
+      // Stream the response directly from Ollama
+      console.log('✅ Streaming response from Ollama Cloud - passing through response body');
+      console.log('Response headers:', {
+        contentType: response.headers.get('content-type'),
+        status: response.status,
+        ok: response.ok
+      });
+      
+      // Pass through the response body directly
+      return new Response(response.body, {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    } else {
+      // Non-streaming: collect full response and return as JSON
+      console.log('📦 Collecting non-streaming response from Ollama Cloud');
+      const data = await response.json();
+      
+      // Ollama Cloud non-streaming format: { "model": "...", "message": { "role": "assistant", "content": "..." }, "done": true }
+      const fullResponse = data.message?.content || '';
+      console.log('✅ Got non-streaming response, length:', fullResponse.length);
+      
+      return new Response(
+        JSON.stringify({ response: fullResponse }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
 
   } catch (error) {
     console.error('Error in ollama-proxy:', error);

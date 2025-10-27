@@ -116,12 +116,13 @@ export const Chat = () => {
       
       let answer = '';
       try {
-        const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-          body: { 
-            prompt: ragPrompt,
-            model: selectedModel
-          }
-        });
+    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
+      body: { 
+        prompt: ragPrompt,
+        model: selectedModel,
+        stream: false  // Disable streaming for RAG to get complete response
+      }
+    });
 
         if (error) {
           throw new Error(`Edge Function error: ${error.message}`);
@@ -173,12 +174,13 @@ export const Chat = () => {
       
       let answer = '';
       try {
-        const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-          body: { 
-            prompt: ragPrompt,
-            model: selectedModel
-          }
-        });
+    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
+      body: { 
+        prompt: ragPrompt,
+        model: selectedModel,
+        stream: false  // Disable streaming for RAG to get complete response
+      }
+    });
 
         if (error) {
           throw new Error(`Edge Function error: ${error.message}`);
