@@ -2,8 +2,7 @@ import { User, Copy, ThumbsUp, ThumbsDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import firefliesLogo from "@/assets/fireflies-logo.png";
 import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Highlight, themes } from 'prism-react-renderer';
 import remarkGfm from 'remark-gfm';
 
 interface ChatMessageProps {
@@ -76,18 +75,33 @@ export const ChatMessage = ({ message }: ChatMessageProps) => {
                           <Copy className="w-3 h-3" />
                         </Button>
                       </div>
-                      <SyntaxHighlighter
-                        style={vscDarkPlus as any}
-                        language={match[1]}
-                        PreTag="div"
-                        customStyle={{
-                          marginTop: 0,
-                          borderTopLeftRadius: 0,
-                          borderTopRightRadius: 0,
-                        }}
+                      <Highlight
+                        theme={themes.vsDark}
+                        code={codeString}
+                        language={match[1] as any}
                       >
-                        {codeString}
-                      </SyntaxHighlighter>
+                        {({ className, style, tokens, getLineProps, getTokenProps }) => (
+                          <pre
+                            className={className}
+                            style={{
+                              ...style,
+                              marginTop: 0,
+                              borderTopLeftRadius: 0,
+                              borderTopRightRadius: 0,
+                              padding: '1rem',
+                              fontSize: '0.875rem',
+                            }}
+                          >
+                            {tokens.map((line, i) => (
+                              <div key={i} {...getLineProps({ line })}>
+                                {line.map((token, key) => (
+                                  <span key={key} {...getTokenProps({ token })} />
+                                ))}
+                              </div>
+                            ))}
+                          </pre>
+                        )}
+                      </Highlight>
                     </div>
                   ) : (
                     <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono" {...rest}>
