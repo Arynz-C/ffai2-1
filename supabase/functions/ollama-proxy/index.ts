@@ -35,7 +35,7 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, model = 'FireFlies:latest', action, image, stream = true } = requestBody;
+    const { prompt, model = 'FireFlies:latest', action, image, stream = true, useTools = false, messages = [] } = requestBody;
     console.log(`🤖 Received model: ${model}, action: ${action}`);
     
     // Get Ollama API Key for Cloud API
@@ -159,89 +159,250 @@ serve(async (req) => {
       }
     }
     
-    // Handle native Ollama web search functionality
-    if (action === 'webSearch') {
-      console.log('Performing native Ollama web search for:', prompt);
+    // Handle chat with tool calling (webSearch and webFetch)
+    if (useTools) {
+      console.log('🔧 Using tool calling mode with webSearch and webFetch');
       
       try {
-        const { max_results = 3 } = requestBody;
-        
-        const searchResponse = await fetch('https://ollama.com/api/web/search', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${ollamaApiKey}`
+        // Define tool schemas
+        const webSearchTool = {
+          type: 'function',
+          function: {
+            name: 'webSearch',
+            description: 'Performs a web search for the given query.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query string.' },
+                max_results: {
+                  type: 'number',
+                  description: 'The maximum number of results to return per query (default 3).',
+                },
+              },
+              required: ['query'],
+            },
           },
-          body: JSON.stringify({
-            query: prompt,
-            max_results
-          })
-        });
-        
-        if (!searchResponse.ok) {
-          console.error(`Web search API error: ${searchResponse.status}`);
-          const errorText = await searchResponse.text();
-          console.error('Error response:', errorText);
-          throw new Error(`Web search API error: ${searchResponse.status}`);
-        }
-        
-        const searchData = await searchResponse.json();
-        console.log('Web search results:', searchData.results?.length || 0);
-        
-        return new Response(JSON.stringify(searchData), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-        
-      } catch (searchError) {
-        console.error('Web search error:', searchError);
-        const errorMessage = searchError instanceof Error ? searchError.message : 'Unknown error';
-        return new Response(JSON.stringify({ 
-          error: `Web search failed: ${errorMessage}` 
-        }), {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-    }
-    
-    // Handle native Ollama web fetch functionality
-    if (action === 'webFetch') {
-      console.log('Performing native Ollama web fetch for URL:', requestBody.url);
-      
-      try {
-        const { url } = requestBody;
-        if (!url) {
-          throw new Error('URL is required for web fetch');
-        }
-        
-        const fetchResponse = await fetch('ttps://ollama.chom/api/web/fetch', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${ollamaApiKey}`
+        };
+
+        const webFetchTool = {
+          type: 'function',
+          function: {
+            name: 'webFetch',
+            description: 'Fetches a single page by URL.',
+            parameters: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'A single URL to fetch.' },
+              },
+              required: ['url'],
+            },
           },
-          body: JSON.stringify({ url })
+        };
+
+        // Initialize conversation messages
+        let conversationMessages = messages.length > 0 ? [...messages] : [
+          { role: 'user', content: prompt }
+        ];
+
+        // Tool execution loop
+        let maxIterations = 5;
+        let iteration = 0;
+        
+        // Create a TransformStream for streaming response
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+
+        // Process in background
+        (async () => {
+          try {
+            while (iteration < maxIterations) {
+              iteration++;
+              console.log(`🔄 Tool calling iteration ${iteration}`);
+
+              const ollamaResponse = await fetch('https://ollama.com/api/chat', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${ollamaApiKey}`
+                },
+                body: JSON.stringify({
+                  model,
+                  messages: conversationMessages,
+                  tools: [webSearchTool, webFetchTool],
+                  stream: true,
+                })
+              });
+
+              if (!ollamaResponse.ok) {
+                throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+              }
+
+              let accumulatedContent = '';
+              let accumulatedThinking = '';
+              let toolCalls: any[] = [];
+              let hasToolCalls = false;
+
+              const reader = ollamaResponse.body?.getReader();
+              if (!reader) throw new Error('No response body');
+
+              const decoder = new TextDecoder();
+              
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n').filter(line => line.trim());
+
+                for (const line of lines) {
+                  try {
+                    const json = JSON.parse(line);
+                    
+                    if (json.message) {
+                      // Stream thinking if present
+                      if (json.message.thinking) {
+                        accumulatedThinking += json.message.thinking;
+                        await writer.write(encoder.encode(`data: ${JSON.stringify({
+                          type: 'thinking',
+                          content: json.message.thinking
+                        })}\n\n`));
+                      }
+
+                      // Stream content if present
+                      if (json.message.content) {
+                        accumulatedContent += json.message.content;
+                        await writer.write(encoder.encode(`data: ${JSON.stringify({
+                          type: 'content',
+                          content: json.message.content
+                        })}\n\n`));
+                      }
+
+                      // Collect tool calls
+                      if (json.message.tool_calls && json.message.tool_calls.length > 0) {
+                        hasToolCalls = true;
+                        toolCalls = json.message.tool_calls;
+                      }
+                    }
+
+                    if (json.done) break;
+                  } catch (e) {
+                    console.error('Error parsing JSON line:', e);
+                  }
+                }
+              }
+
+              // If no tool calls, we're done
+              if (!hasToolCalls) {
+                await writer.write(encoder.encode(`data: [DONE]\n\n`));
+                break;
+              }
+
+              // Execute tool calls
+              console.log(`🔧 Executing ${toolCalls.length} tool call(s)`);
+              
+              // Add assistant message with tool calls
+              conversationMessages.push({
+                role: 'assistant',
+                content: accumulatedContent,
+                thinking: accumulatedThinking,
+                tool_calls: toolCalls
+              });
+
+              for (const toolCall of toolCalls) {
+                const functionName = toolCall.function.name;
+                const args = toolCall.function.arguments;
+
+                console.log(`📞 Calling ${functionName} with args:`, args);
+
+                await writer.write(encoder.encode(`data: ${JSON.stringify({
+                  type: 'tool_call',
+                  function: functionName,
+                  arguments: args
+                })}\n\n`));
+
+                let toolResult: any;
+
+                if (functionName === 'webSearch') {
+                  try {
+                    const searchResponse = await fetch('https://ollama.com/api/web/search', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
+                      },
+                      body: JSON.stringify({
+                        query: args.query,
+                        max_results: args.max_results || 3
+                      })
+                    });
+
+                    if (searchResponse.ok) {
+                      toolResult = await searchResponse.json();
+                    } else {
+                      toolResult = { error: `Search failed: ${searchResponse.status}` };
+                    }
+                  } catch (error) {
+                    toolResult = { error: `Search error: ${error.message}` };
+                  }
+                } else if (functionName === 'webFetch') {
+                  try {
+                    const fetchResponse = await fetch('https://ollama.com/api/web/fetch', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
+                      },
+                      body: JSON.stringify({ url: args.url })
+                    });
+
+                    if (fetchResponse.ok) {
+                      toolResult = await fetchResponse.json();
+                      // Limit content size
+                      if (toolResult.content && toolResult.content.length > 8000) {
+                        toolResult.content = toolResult.content.substring(0, 8000);
+                      }
+                    } else {
+                      toolResult = { error: `Fetch failed: ${fetchResponse.status}` };
+                    }
+                  } catch (error) {
+                    toolResult = { error: `Fetch error: ${error.message}` };
+                  }
+                }
+
+                // Add tool result to conversation
+                conversationMessages.push({
+                  role: 'tool',
+                  content: JSON.stringify(toolResult),
+                  tool_name: functionName
+                });
+              }
+            }
+
+            await writer.close();
+          } catch (error) {
+            console.error('Tool calling error:', error);
+            await writer.write(encoder.encode(`data: ${JSON.stringify({
+              type: 'error',
+              content: error.message
+            })}\n\n`));
+            await writer.close();
+          }
+        })();
+
+        return new Response(readable, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
         });
-        
-        if (!fetchResponse.ok) {
-          console.error(`Web fetch API error: ${fetchResponse.status}`);
-          const errorText = await fetchResponse.text();
-          console.error('Error response:', errorText);
-          throw new Error(`Web fetch API error: ${fetchResponse.status}`);
-        }
-        
-        const fetchData = await fetchResponse.json();
-        console.log('Web fetch successful, content length:', fetchData.content?.length || 0);
-        
-        return new Response(JSON.stringify(fetchData), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-        
-      } catch (fetchError) {
-        console.error('Web fetch error:', fetchError);
-        const errorMessage = fetchError instanceof Error ? fetchError.message : 'Unknown error';
+
+      } catch (error) {
+        console.error('Tool calling setup error:', error);
         return new Response(JSON.stringify({ 
-          error: `Web fetch failed: ${errorMessage}` 
+          error: `Tool calling failed: ${error.message}` 
         }), {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },

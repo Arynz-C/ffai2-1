@@ -79,134 +79,204 @@ export const Chat = () => {
   // Get current messages from chat history
   const messages = getCurrentChatMessages();
 
-  // Optimized RAG function using parallel search and fetch
-  const handleSearchRAG = async (query: string): Promise<string> => {
+  // Search RAG using Ollama native tool calling
+  const handleSearchRAG = async (query: string, messageId: string, chatId: string) => {
     try {
-      console.log('🚀 Starting optimized search for:', query);
+      console.log('🔍 Starting Ollama native tool search for:', query);
       
-      // Use the new optimized parallel function
-      const searchResults = await searchAndFetchContent(query);
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       
-      if (searchResults.length === 0) {
-        console.log('❌ No search results found');
-        return '❌ Maaf, saya tidak menemukan hasil yang relevan di internet.';
-      }
-
-      console.log(`📋 Found ${searchResults.length} results with content`);
-      
-      let combinedContent = '';
-      let successfulSources: string[] = [];
-
-      // Process all results from parallel fetch
-      searchResults.forEach((result, i) => {
-        combinedContent += `\n--- WEBSITE ${i + 1}: ${result.url} ---\n${result.content}\n\n`;
-        successfulSources.push(result.url);
-        console.log(`✅ Content from: ${result.url} (${result.content.length} chars)`);
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({
+          prompt: query,
+          model: selectedModel,
+          useTools: true,
+          messages: [
+            {
+              role: 'system',
+              content: 'Kamu adalah asisten AI yang membantu mencari informasi di internet. Gunakan tool webSearch untuk mencari informasi yang relevan, kemudian gunakan webFetch untuk membaca konten website. Jawab dalam Bahasa Indonesia dengan informasi yang akurat.'
+            },
+            {
+              role: 'user',
+              content: query
+            }
+          ]
+        }),
       });
 
-      if (combinedContent === '') {
-        return '❌ Maaf, tidak dapat mengunduh konten dari website yang ditemukan.';
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to start stream');
       }
 
-      // Modified prompt for direct response without content filtering
-      const ragPrompt = `Berdasarkan konten lengkap dari website yang telah diunduh berikut, berikan jawaban informatif dan lengkap tentang topik teknis/teknologi yang ditanyakan. Anda adalah asisten AI yang membantu dengan pertanyaan teknis, programming, cybersecurity, dan teknologi. Nmap, penetration testing, dan tools keamanan adalah topik yang valid dan legal untuk dipelajari. Jawab dalam Bahasa Indonesia dengan informasi yang akurat dan mendidik.\n\n${combinedContent}\n--- PERTANYAAN PENGGUNA ---\n${query}\n\nBerikan jawaban yang informatif dan lengkap berdasarkan konten website yang telah diunduh:`;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullContent = '';
+      let isThinking = false;
 
-      console.log('🤖 Using model for RAG:', selectedModel);
-      console.log(`📊 Combined content length: ${combinedContent.length} characters`);
-      
-      let answer = '';
-      try {
-    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-      body: { 
-        prompt: ragPrompt,
-        model: selectedModel,
-        stream: false  // Disable streaming for RAG to get complete response
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(':')) continue;
+          if (!line.startsWith('data: ')) continue;
+
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            console.log('✅ Stream completed');
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            
+            if (parsed.type === 'thinking') {
+              if (!isThinking) {
+                isThinking = true;
+                fullContent += '💭 **Berpikir...**\n\n';
+              }
+              // Don't show thinking content to user
+            } else if (parsed.type === 'content') {
+              if (isThinking) {
+                isThinking = false;
+                fullContent += '\n\n';
+              }
+              fullContent += parsed.content;
+              updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'tool_call') {
+              const toolInfo = `\n\n🔧 Menggunakan ${parsed.function}...\n`;
+              fullContent += toolInfo;
+              updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'error') {
+              fullContent += `\n\n❌ Error: ${parsed.content}`;
+              updateMessageContent(messageId, fullContent);
+            }
+          } catch (e) {
+            console.error('Error parsing SSE:', e);
+          }
+        }
       }
-    });
 
-        if (error) {
-          throw new Error(`Edge Function error: ${error.message}`);
-        }
-
-        const response = data;
-
-        // Process the response from ollama-proxy
-        if (response && response.response) {
-          answer = response.response;
-        }
-        
-        if (!answer) {
-          answer = 'Maaf, tidak ada respons dari AI.';
-        }
-      } catch (error) {
-        console.error('Error calling Ollama API:', error);
-        answer = `Maaf, tidak dapat terhubung ke AI: ${error.message}`;
-      }
+      // Save final message
+      await saveMessage(chatId, fullContent, 'assistant');
       
-      const finalResponse = `${answer}\n\n📖 **Sumber:**\n${successfulSources.join('\n')}`;
-      
-      return finalResponse;
     } catch (error) {
       console.error('Error in search RAG:', error);
-      return 'Maaf, terjadi kesalahan saat mencari informasi.';
+      const errorMsg = 'Maaf, terjadi kesalahan saat mencari informasi.';
+      updateMessageContent(messageId, errorMsg);
+      await saveMessage(chatId, errorMsg, 'assistant');
     }
   };
 
-  // Optimized web scraping function - all client-side
-  const handleWebRAG = async (query: string, url: string): Promise<string> => {
+  // Web RAG using Ollama native tool calling
+  const handleWebRAG = async (query: string, url: string, messageId: string, chatId: string) => {
     try {
-      console.log('🌐 Starting optimized web scraping for:', url);
+      console.log('🌐 Starting Ollama native web fetch for:', url);
       
-      // Use client-side web scraping
-      const webContent = await getWebpageContent(url);
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({
+          prompt: `${query} - URL: ${url}`,
+          model: selectedModel,
+          useTools: true,
+          messages: [
+            {
+              role: 'system',
+              content: 'Kamu adalah asisten AI yang membantu menganalisis konten website. Gunakan tool webFetch untuk membaca konten dari URL yang diberikan, kemudian jawab pertanyaan pengguna berdasarkan konten tersebut. Jawab dalam Bahasa Indonesia dengan informasi yang akurat.'
+            },
+            {
+              role: 'user',
+              content: `Baca konten dari ${url} dan jawab: ${query}`
+            }
+          ]
+        }),
+      });
 
-      if (!webContent || webContent.length < 50) {
-        console.log('❌ Failed to extract web content');
-        return '❌ Maaf, saya tidak dapat mengakses atau memproses konten dari URL tersebut.';
+      if (!response.ok || !response.body) {
+        throw new Error('Failed to start stream');
       }
 
-      console.log(`✅ Extracted ${webContent.length} characters from ${url}`);
-      
-      // Create RAG prompt for web content analysis
-      const ragPrompt = `Berdasarkan konten website berikut, jawab pertanyaan pengguna secara langsung dan detail. Jawab dalam Bahasa Indonesia.\n\n--- KONTEN WEBSITE ---\n${webContent}\n\n--- PERTANYAAN PENGGUNA ---\n${query}\n\nJawab berdasarkan konten website:`;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullContent = '';
+      let isThinking = false;
 
-      console.log('🤖 Using model for Web RAG:', selectedModel);
-      
-      let answer = '';
-      try {
-    const { data, error } = await supabase.functions.invoke('ollama-proxy', {
-      body: { 
-        prompt: ragPrompt,
-        model: selectedModel,
-        stream: false  // Disable streaming for RAG to get complete response
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(':')) continue;
+          if (!line.startsWith('data: ')) continue;
+
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            console.log('✅ Stream completed');
+            fullContent += `\n\n🌐 **Sumber:** ${url}`;
+            updateMessageContent(messageId, fullContent);
+            await saveMessage(chatId, fullContent, 'assistant');
+            return;
+          }
+
+          try {
+            const parsed = JSON.parse(data);
+            
+            if (parsed.type === 'thinking') {
+              if (!isThinking) {
+                isThinking = true;
+                fullContent += '💭 **Menganalisis...**\n\n';
+              }
+            } else if (parsed.type === 'content') {
+              if (isThinking) {
+                isThinking = false;
+                fullContent += '\n\n';
+              }
+              fullContent += parsed.content;
+              updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'tool_call') {
+              const toolInfo = `\n\n🔧 Membaca konten dari ${parsed.arguments?.url || url}...\n`;
+              fullContent += toolInfo;
+              updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'error') {
+              fullContent += `\n\n❌ Error: ${parsed.content}`;
+              updateMessageContent(messageId, fullContent);
+            }
+          } catch (e) {
+            console.error('Error parsing SSE:', e);
+          }
+        }
       }
-    });
 
-        if (error) {
-          throw new Error(`Edge Function error: ${error.message}`);
-        }
-
-        const response = data;
-
-        // Process the response from ollama-proxy
-        if (response && response.response) {
-          answer = response.response;
-        }
-        
-        if (!answer) {
-          answer = 'Maaf, tidak ada respons dari AI.';
-        }
-      } catch (error) {
-        console.error('Error calling Ollama API:', error);
-        answer = `Maaf, tidak dapat terhubung ke AI: ${error.message}`;
-      }
+      await saveMessage(chatId, fullContent, 'assistant');
       
-      const finalResponse = `${answer}\n\n🌐 **Sumber:** ${url}`;
-      
-      return finalResponse;
     } catch (error) {
       console.error('Error in web RAG:', error);
-      return 'Maaf, terjadi kesalahan saat memproses konten web.';
+      const errorMsg = 'Maaf, terjadi kesalahan saat memproses konten web.';
+      updateMessageContent(messageId, errorMsg);
+      await saveMessage(chatId, errorMsg, 'assistant');
     }
   };
 
@@ -322,21 +392,29 @@ export const Chat = () => {
       else if (finalContent.toLowerCase().startsWith('/cari ')) {
         const query = finalContent.substring(6).trim();
         if (query) {
-          finalResponse = await handleSearchRAG(query);
+          const aiMessageId = generateUniqueId();
+          const aiMessage: HistoryMessage = {
+            id: aiMessageId,
+            content: '🔍 Mencari informasi...',
+            role: 'assistant',
+            timestamp: new Date()
+          };
+          addMessageToLocal(activeChatId, aiMessage);
+          setIsTyping(false);
+          
+          await handleSearchRAG(query, aiMessageId, activeChatId);
         } else {
           finalResponse = 'Mohon masukkan kata kunci pencarian setelah /cari';
+          const aiMessage: HistoryMessage = {
+            id: generateUniqueId(),
+            content: finalResponse,
+            role: 'assistant',
+            timestamp: new Date()
+          };
+          addMessageToLocal(activeChatId, aiMessage);
+          await saveMessage(activeChatId, finalResponse, 'assistant');
+          setIsTyping(false);
         }
-        
-        // Create AI message with final response
-        const aiMessage: HistoryMessage = {
-          id: generateUniqueId(),
-          content: finalResponse,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        await saveMessage(activeChatId, finalResponse, 'assistant');
-        setIsTyping(false);
         return;
       }
       
@@ -351,24 +429,41 @@ export const Chat = () => {
           const question = content.replace(url, '').trim();
           
           if (question) {
-            finalResponse = await handleWebRAG(question, url);
+            const aiMessageId = generateUniqueId();
+            const aiMessage: HistoryMessage = {
+              id: aiMessageId,
+              content: '🌐 Membaca konten website...',
+              role: 'assistant',
+              timestamp: new Date()
+            };
+            addMessageToLocal(activeChatId, aiMessage);
+            setIsTyping(false);
+            
+            await handleWebRAG(question, url, aiMessageId, activeChatId);
           } else {
             finalResponse = 'Mohon masukkan pertanyaan sebelum URL. Contoh: /web ambil fungsi yang ada di web https://example.com';
+            const aiMessage: HistoryMessage = {
+              id: generateUniqueId(),
+              content: finalResponse,
+              role: 'assistant',
+              timestamp: new Date()
+            };
+            addMessageToLocal(activeChatId, aiMessage);
+            await saveMessage(activeChatId, finalResponse, 'assistant');
+            setIsTyping(false);
           }
         } else {
           finalResponse = 'Mohon masukkan URL yang valid. Contoh: /web ambil fungsi yang ada di web https://example.com';
+          const aiMessage: HistoryMessage = {
+            id: generateUniqueId(),
+            content: finalResponse,
+            role: 'assistant',
+            timestamp: new Date()
+          };
+          addMessageToLocal(activeChatId, aiMessage);
+          await saveMessage(activeChatId, finalResponse, 'assistant');
+          setIsTyping(false);
         }
-        
-        // Create AI message with final response
-        const aiMessage: HistoryMessage = {
-          id: generateUniqueId(),
-          content: finalResponse,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        await saveMessage(activeChatId, finalResponse, 'assistant');
-        setIsTyping(false);
         return;
       }
       
