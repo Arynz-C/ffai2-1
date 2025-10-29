@@ -325,10 +325,11 @@ serve(async (req) => {
 
                 if (functionName === 'webSearch') {
                   try {
-                    const searchResponse = await fetch('https://ollama.com/api/websearch', {
+                    const searchResponse = await fetch('https://ollama.com/api/web/search', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
                       },
                       body: JSON.stringify({
                         query: args.query,
@@ -338,40 +339,33 @@ serve(async (req) => {
 
                     if (searchResponse.ok) {
                       toolResult = await searchResponse.json();
-                      console.log(`✅ Search successful: ${JSON.stringify(toolResult).slice(0, 200)}`);
                     } else {
-                      const errorText = await searchResponse.text();
-                      console.error(`❌ Search failed (${searchResponse.status}):`, errorText);
-                      toolResult = { error: `Search failed: ${searchResponse.status} - ${errorText}` };
+                      toolResult = { error: `Search failed: ${searchResponse.status}` };
                     }
                   } catch (error) {
-                    console.error('❌ Search exception:', error);
                     toolResult = { error: `Search error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 } else if (functionName === 'webFetch') {
                   try {
-                    const fetchResponse = await fetch('https://ollama.com/api/webfetch', {
+                    const fetchResponse = await fetch('https://ollama.com/api/web/fetch', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
                       },
                       body: JSON.stringify({ url: args.url })
                     });
 
                     if (fetchResponse.ok) {
                       toolResult = await fetchResponse.json();
-                      console.log(`✅ Fetch successful: ${args.url}`);
                       // Limit content size
                       if (toolResult.content && toolResult.content.length > 8000) {
                         toolResult.content = toolResult.content.substring(0, 8000);
                       }
                     } else {
-                      const errorText = await fetchResponse.text();
-                      console.error(`❌ Fetch failed (${fetchResponse.status}):`, errorText);
-                      toolResult = { error: `Fetch failed: ${fetchResponse.status} - ${errorText}` };
+                      toolResult = { error: `Fetch failed: ${fetchResponse.status}` };
                     }
                   } catch (error) {
-                    console.error('❌ Fetch exception:', error);
                     toolResult = { error: `Fetch error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 }
