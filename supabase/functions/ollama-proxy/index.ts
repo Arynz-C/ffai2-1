@@ -343,7 +343,7 @@ serve(async (req) => {
                       toolResult = { error: `Search failed: ${searchResponse.status}` };
                     }
                   } catch (error) {
-                    toolResult = { error: `Search error: ${error.message}` };
+                    toolResult = { error: `Search error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 } else if (functionName === 'webFetch') {
                   try {
@@ -366,7 +366,7 @@ serve(async (req) => {
                       toolResult = { error: `Fetch failed: ${fetchResponse.status}` };
                     }
                   } catch (error) {
-                    toolResult = { error: `Fetch error: ${error.message}` };
+                    toolResult = { error: `Fetch error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 }
 
@@ -384,7 +384,7 @@ serve(async (req) => {
             console.error('Tool calling error:', error);
             await writer.write(encoder.encode(`data: ${JSON.stringify({
               type: 'error',
-              content: error.message
+              content: error instanceof Error ? error.message : 'Unknown error'
             })}\n\n`));
             await writer.close();
           }
@@ -402,7 +402,7 @@ serve(async (req) => {
       } catch (error) {
         console.error('Tool calling setup error:', error);
         return new Response(JSON.stringify({ 
-          error: `Tool calling failed: ${error.message}` 
+          error: `Tool calling failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
         }), {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -839,15 +839,15 @@ serve(async (req) => {
       images?: string[];
     };
     
-    let messages: ChatMessage[] = [];
+    let chatMessages: ChatMessage[] = [];
     
     // Add history if available
     if (history && Array.isArray(history) && history.length > 0) {
-      messages = [...history];
+      chatMessages = [...history];
     }
     
     // Add the current user message
-    messages.push({
+    chatMessages.push({
       role: 'user',
       content: prompt
     });
@@ -859,7 +859,7 @@ serve(async (req) => {
       console.log(`⚠️ Model name adjusted for cloud: ${model} -> ${cloudModel}`);
     }
     
-    console.log(`📝 Sending to Ollama Cloud: ${messages.length} messages, model: ${cloudModel}`);
+    console.log(`📝 Sending to Ollama Cloud: ${chatMessages.length} messages, model: ${cloudModel}`);
     
     const response = await fetch('https://ollama.com/api/chat', {
       method: 'POST',
@@ -869,7 +869,7 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: cloudModel,
-        messages,
+        messages: chatMessages,
         stream: stream,  // Use stream parameter from request
       }),
     });
