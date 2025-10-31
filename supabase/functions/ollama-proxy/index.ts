@@ -329,6 +329,7 @@ serve(async (req) => {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
                       },
                       body: JSON.stringify({
                         query: args.query,
@@ -354,6 +355,7 @@ serve(async (req) => {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ollamaApiKey}`
                       },
                       body: JSON.stringify({ url: args.url })
                     });
