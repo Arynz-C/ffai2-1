@@ -325,7 +325,7 @@ serve(async (req) => {
 
                 if (functionName === 'webSearch') {
                   try {
-                    const searchResponse = await fetch('https://ollama.com/api/websearch', {
+                    const searchResponse = await fetch('https://ollama.com/api/web_search', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
@@ -351,7 +351,7 @@ serve(async (req) => {
                   }
                 } else if (functionName === 'webFetch') {
                   try {
-                    const fetchResponse = await fetch('https://ollama.com/api/webfetch', {
+                    const fetchResponse = await fetch('https://ollama.com/api/web_fetch', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
