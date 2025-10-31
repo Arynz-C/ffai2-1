@@ -325,55 +325,60 @@ serve(async (req) => {
 
                 if (functionName === 'webSearch') {
                   try {
+                    console.log(`🔍 Calling web_search API with query: "${args.query}"`);
                     const searchResponse = await fetch('https://ollama.com/api/web_search', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${ollamaApiKey}`
+                        'Authorization': `Bearer ${ollamaApiKey}`,
                       },
                       body: JSON.stringify({
                         query: args.query,
-                        max_results: args.max_results || 3
-                      })
+                        max_results: args.max_results || 5
+                      }),
                     });
 
-                    if (searchResponse.ok) {
-                      toolResult = await searchResponse.json();
-                      console.log(`✅ Search successful: ${JSON.stringify(toolResult).slice(0, 200)}`);
-                    } else {
+                    if (!searchResponse.ok) {
                       const errorText = await searchResponse.text();
-                      console.error(`❌ Search failed (${searchResponse.status}):`, errorText);
-                      toolResult = { error: `Search failed: ${searchResponse.status} - ${errorText}` };
+                      console.error(`❌ webSearch failed (${searchResponse.status}):`, errorText);
+                      toolResult = { error: `Search failed: ${searchResponse.status}` };
+                    } else {
+                      toolResult = await searchResponse.json();
+                      console.log(`✅ webSearch success:`, JSON.stringify(toolResult).slice(0, 300));
                     }
                   } catch (error) {
-                    console.error('❌ Search exception:', error);
+                    console.error('❌ webSearch exception:', error);
                     toolResult = { error: `Search error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 } else if (functionName === 'webFetch') {
                   try {
+                    console.log(`🌐 Calling web_fetch API for URL: ${args.url}`);
                     const fetchResponse = await fetch('https://ollama.com/api/web_fetch', {
                       method: 'POST',
                       headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${ollamaApiKey}`
+                        'Authorization': `Bearer ${ollamaApiKey}`,
                       },
-                      body: JSON.stringify({ url: args.url })
+                      body: JSON.stringify({
+                        url: args.url
+                      }),
                     });
 
-                    if (fetchResponse.ok) {
+                    if (!fetchResponse.ok) {
+                      const errorText = await fetchResponse.text();
+                      console.error(`❌ webFetch failed (${fetchResponse.status}):`, errorText);
+                      toolResult = { error: `Fetch failed: ${fetchResponse.status}` };
+                    } else {
                       toolResult = await fetchResponse.json();
-                      console.log(`✅ Fetch successful: ${args.url}`);
+                      console.log(`✅ webFetch success for ${args.url}`);
+                      
                       // Limit content size
                       if (toolResult.content && toolResult.content.length > 8000) {
                         toolResult.content = toolResult.content.substring(0, 8000);
                       }
-                    } else {
-                      const errorText = await fetchResponse.text();
-                      console.error(`❌ Fetch failed (${fetchResponse.status}):`, errorText);
-                      toolResult = { error: `Fetch failed: ${fetchResponse.status} - ${errorText}` };
                     }
                   } catch (error) {
-                    console.error('❌ Fetch exception:', error);
+                    console.error('❌ webFetch exception:', error);
                     toolResult = { error: `Fetch error: ${error instanceof Error ? error.message : 'Unknown'}` };
                   }
                 }
