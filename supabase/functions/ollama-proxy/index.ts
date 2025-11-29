@@ -325,26 +325,34 @@ serve(async (req) => {
 
                 if (functionName === 'webSearch') {
                   try {
-                    console.log(`🔍 Calling web_search API with query: "${args.query}"`);
-                    const searchResponse = await fetch('https://ollama.com/api/web_search', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${ollamaApiKey}`,
-                      },
-                      body: JSON.stringify({
-                        query: args.query,
-                        max_results: args.max_results || 5
-                      }),
+                    console.log(`🔍 Using web-scraper for search: "${args.query}"`);
+                    
+                    // Initialize Supabase client
+                    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+                    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+                    const supabase = createClient(supabaseUrl, supabaseKey);
+                    
+                    const { data: searchData, error: searchError } = await supabase.functions.invoke('web-scraper', {
+                      body: { 
+                        action: 'search', 
+                        query: args.query 
+                      }
                     });
 
-                    if (!searchResponse.ok) {
-                      const errorText = await searchResponse.text();
-                      console.error(`❌ webSearch failed (${searchResponse.status}):`, errorText);
-                      toolResult = { error: `Search failed: ${searchResponse.status}` };
+                    if (searchError) {
+                      console.error(`❌ webSearch failed:`, searchError);
+                      toolResult = { error: `Search failed: ${searchError.message}` };
                     } else {
-                      toolResult = await searchResponse.json();
-                      console.log(`✅ webSearch success:`, JSON.stringify(toolResult).slice(0, 300));
+                      // Format results for the model
+                      const urls = searchData.urls || [];
+                      toolResult = {
+                        results: urls.map((url: string, idx: number) => ({
+                          title: `Result ${idx + 1}`,
+                          url: url,
+                          snippet: `Found result for: ${args.query}`
+                        }))
+                      };
+                      console.log(`✅ webSearch success: ${urls.length} results`);
                     }
                   } catch (error) {
                     console.error('❌ webSearch exception:', error);
@@ -352,30 +360,36 @@ serve(async (req) => {
                   }
                 } else if (functionName === 'webFetch') {
                   try {
-                    console.log(`🌐 Calling web_fetch API for URL: ${args.url}`);
-                    const fetchResponse = await fetch('https://ollama.com/api/web_fetch', {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${ollamaApiKey}`,
-                      },
-                      body: JSON.stringify({
-                        url: args.url
-                      }),
+                    console.log(`🌐 Using web-scraper for fetch: ${args.url}`);
+                    
+                    // Initialize Supabase client
+                    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+                    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+                    const supabase = createClient(supabaseUrl, supabaseKey);
+                    
+                    const { data: fetchData, error: fetchError } = await supabase.functions.invoke('web-scraper', {
+                      body: { 
+                        action: 'fetch', 
+                        url: args.url 
+                      }
                     });
 
-                    if (!fetchResponse.ok) {
-                      const errorText = await fetchResponse.text();
-                      console.error(`❌ webFetch failed (${fetchResponse.status}):`, errorText);
-                      toolResult = { error: `Fetch failed: ${fetchResponse.status}` };
+                    if (fetchError) {
+                      console.error(`❌ webFetch failed:`, fetchError);
+                      toolResult = { error: `Fetch failed: ${fetchError.message}` };
                     } else {
-                      toolResult = await fetchResponse.json();
-                      console.log(`✅ webFetch success for ${args.url}`);
+                      toolResult = {
+                        url: args.url,
+                        content: fetchData.content || '',
+                        title: fetchData.title || 'Web Page'
+                      };
                       
                       // Limit content size
                       if (toolResult.content && toolResult.content.length > 8000) {
                         toolResult.content = toolResult.content.substring(0, 8000);
                       }
+                      
+                      console.log(`✅ webFetch success for ${args.url}`);
                     }
                   } catch (error) {
                     console.error('❌ webFetch exception:', error);
