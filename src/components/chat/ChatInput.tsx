@@ -1,6 +1,6 @@
 // Chat input component
 import { useState, useEffect, useRef } from "react";
-import { Send, Settings, Search, Globe, Square, X, Plus, Image, Upload, FileText } from "lucide-react";
+import { Send, Settings, Search, Globe, Square, X, Plus, Image, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 interface ChatInputProps {
-  onSendMessage: (message: string, image?: File, document?: File) => void;
+  onSendMessage: (message: string, image?: File) => void;
   onToolUse?: (tool: 'search' | 'web', query: string) => void;
   onStopGeneration?: () => void;
   disabled?: boolean;
@@ -22,9 +22,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
   const [message, setMessage] = useState("");
   const [selectedTool, setSelectedTool] = useState<'search' | 'web' | null>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
-  const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const documentInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-detect tool commands and trigger UI
   useEffect(() => {
@@ -34,14 +32,12 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     } else if (message.startsWith('/web ')) {
       setSelectedTool('web');
       setMessage(message.replace('/web ', '')); // Remove command, keep the query
-    } else if (message.startsWith('/buat ')) {
-      // Keep the /buat command for document generation
     }
   }, [message, onSendMessage]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if ((message.trim() || selectedImage || selectedDocument) && !disabled) {
+    if ((message.trim() || selectedImage) && !disabled) {
       let finalMessage = message.trim();
       
       // Add command prefix automatically if tool is selected
@@ -53,19 +49,13 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
       
       // If image is selected but no message, provide default message
       if (selectedImage && !finalMessage) {
-        finalMessage = "Jelaskan gambar ini:";
+        finalMessage = "Describe this image:";
       }
       
-      // If document is selected but no message, provide default message
-      if (selectedDocument && !finalMessage) {
-        finalMessage = "Analisis dokumen ini:";
-      }
-      
-      onSendMessage(finalMessage, selectedImage || undefined, selectedDocument || undefined);
+      onSendMessage(finalMessage, selectedImage || undefined);
       setMessage("");
       setSelectedTool(null);
       setSelectedImage(null);
-      setSelectedDocument(null);
     }
   };
 
@@ -93,28 +83,10 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     }
   };
 
-  const handleDocumentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const validExtensions = ['txt', 'md', 'csv', 'json', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
-      const ext = file.name.split('.').pop()?.toLowerCase();
-      if (ext && validExtensions.includes(ext)) {
-        setSelectedDocument(file);
-      }
-    }
-  };
-
   const handleRemoveImage = () => {
     setSelectedImage(null);
-    if (imageInputRef.current) {
-      imageInputRef.current.value = '';
-    }
-  };
-
-  const handleRemoveDocument = () => {
-    setSelectedDocument(null);
-    if (documentInputRef.current) {
-      documentInputRef.current.value = '';
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -129,8 +101,6 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
       return "Ketik pencarian Anda...";
     } else if (selectedTool === 'web') {
       return "Ketik pertanyaan dan URL... (contoh: ambil fungsi yang ada di web https://example.com)";
-    } else if (selectedDocument) {
-      return "Ajukan pertanyaan tentang dokumen...";
     }
     return "Message FireFlies...";
   };
@@ -166,7 +136,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
             {!isGenerating && (
               <>
                 <input
-                  ref={imageInputRef}
+                  ref={fileInputRef}
                   type="file"
                   accept="image/*"
                   onChange={handleImageSelect}
@@ -177,33 +147,10 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
                   variant="ghost"
                   size="sm"
                   className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover-scale"
-                  onClick={() => imageInputRef.current?.click()}
-                  title="Upload gambar"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Upload image"
                 >
                   <Image className="w-4 h-4" />
-                </Button>
-              </>
-            )}
-
-            {/* Document upload button */}
-            {!isGenerating && (
-              <>
-                <input
-                  ref={documentInputRef}
-                  type="file"
-                  accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
-                  onChange={handleDocumentSelect}
-                  className="hidden"
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover-scale"
-                  onClick={() => documentInputRef.current?.click()}
-                  title="Upload dokumen"
-                >
-                  <FileText className="w-4 h-4" />
                 </Button>
               </>
             )}
@@ -249,7 +196,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
             
             <Button
               type="submit"
-              disabled={(!message.trim() && !selectedImage && !selectedDocument) || disabled}
+              disabled={(!message.trim() && !selectedImage) || disabled}
               size="sm"
               className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50 hover-scale btn-animated"
             >
@@ -281,30 +228,11 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
         {selectedImage && (
           <div className="flex items-center gap-2 mt-3 animate-fade-in">
             <div className="flex items-center gap-2 bg-muted rounded-full px-3 py-1.5 text-sm border border-border">
-              <Image className="w-4 h-4" />
-              <span className="text-foreground">Gambar: {selectedImage.name}</span>
+              <Upload className="w-4 h-4" />
+              <span className="text-foreground">Image: {selectedImage.name}</span>
               <Button
                 type="button"
                 onClick={handleRemoveImage}
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 ml-1 text-muted-foreground hover:text-foreground"
-              >
-                <X className="w-3 h-3" />
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Document selection chip */}
-        {selectedDocument && (
-          <div className="flex items-center gap-2 mt-3 animate-fade-in">
-            <div className="flex items-center gap-2 bg-muted rounded-full px-3 py-1.5 text-sm border border-border">
-              <FileText className="w-4 h-4" />
-              <span className="text-foreground">Dokumen: {selectedDocument.name}</span>
-              <Button
-                type="button"
-                onClick={handleRemoveDocument}
                 variant="ghost"
                 size="sm"
                 className="h-5 w-5 p-0 ml-1 text-muted-foreground hover:text-foreground"
