@@ -295,7 +295,7 @@ export const Chat = () => {
     }
   };
 
-  const handleSendMessage = async (content: string, image?: File) => {
+  const handleSendMessage = async (content: string, image?: File, document?: File) => {
     console.log('🤖 Using model:', selectedModel);
     
     // Check if user has subscription or is on free plan
@@ -308,11 +308,48 @@ export const Chat = () => {
       return;
     }
 
-    // Handle image uploads - automatically switch to vision model
+    // Handle document uploads - parse and add to content
     let finalContent = content;
     let targetModel = selectedModel;
     let base64Image = null;
     
+    if (document) {
+      console.log('📄 Document detected, parsing:', document.name);
+      
+      // Parse document using edge function
+      const formData = new FormData();
+      formData.append('file', document);
+      
+      try {
+        const { data, error } = await supabase.functions.invoke('document-parser', {
+          body: formData
+        });
+        
+        if (error || !data.success) {
+          toast({
+            title: "Error parsing document",
+            description: data?.error || "Tidak dapat membaca dokumen",
+            variant: "destructive"
+          });
+          return;
+        }
+        
+        // Add document content to the message
+        finalContent = `${content}\n\n📄 **Konten Dokumen (${document.name}):**\n\n${data.content}`;
+        console.log('✅ Document parsed successfully, length:', data.content?.length);
+        
+      } catch (err) {
+        console.error('Error parsing document:', err);
+        toast({
+          title: "Error",
+          description: "Gagal memproses dokumen",
+          variant: "destructive"
+        });
+        return;
+      }
+    }
+    
+    // Handle image uploads - automatically switch to vision model
     if (image) {
       targetModel = "qwen3-vl:235b-cloud"; // Vision model
       console.log('🖼️ Image detected, switching to vision model:', targetModel);
@@ -324,7 +361,7 @@ export const Chat = () => {
         reader.readAsDataURL(image);
       });
       
-      finalContent = content || "Describe this image in detail in Indonesian language.";
+      finalContent = content || "Jelaskan gambar ini secara detail dalam Bahasa Indonesia.";
       console.log('🖼️ Image converted to base64, length:', base64Image.length);
     }
 
@@ -390,6 +427,26 @@ export const Chat = () => {
           setIsTyping(false);
         }
         return;
+      }
+      
+      // Handle /buat command for document generation
+      else if (finalContent.toLowerCase().startsWith('/buat ')) {
+        const prompt = finalContent.substring(6).trim();
+        if (prompt) {
+          finalContent = `Buat dokumen atau konten berikut dalam format Markdown yang terstruktur dan mudah dibaca:\n\n${prompt}\n\nPastikan menggunakan heading, list, code block (jika diperlukan), dan format markdown yang sesuai.`;
+        } else {
+          finalResponse = 'Mohon masukkan deskripsi dokumen yang ingin dibuat setelah /buat';
+          const aiMessage: HistoryMessage = {
+            id: generateUniqueId(),
+            content: finalResponse,
+            role: 'assistant',
+            timestamp: new Date()
+          };
+          addMessageToLocal(activeChatId, aiMessage);
+          await saveMessage(activeChatId, finalResponse, 'assistant');
+          setIsTyping(false);
+          return;
+        }
       }
       
       else if (finalContent.toLowerCase().startsWith('/web ')) {
