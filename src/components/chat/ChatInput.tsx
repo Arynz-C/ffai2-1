@@ -1,6 +1,6 @@
 // Chat input component
 import { useState, useEffect, useRef } from "react";
-import { Send, Settings, Calculator, Search, Globe, Trash2, Square, X, Plus, Image, Upload } from "lucide-react";
+import { Send, Settings, Search, Globe, Square, X, Plus, Image, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -12,7 +12,7 @@ import {
 
 interface ChatInputProps {
   onSendMessage: (message: string, image?: File) => void;
-  onToolUse?: (tool: 'calculator' | 'search' | 'web', query: string) => void;
+  onToolUse?: (tool: 'search' | 'web', query: string) => void;
   onStopGeneration?: () => void;
   disabled?: boolean;
   isGenerating?: boolean;
@@ -20,7 +20,7 @@ interface ChatInputProps {
 
 export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled = false, isGenerating = false }: ChatInputProps) => {
   const [message, setMessage] = useState("");
-  const [selectedTool, setSelectedTool] = useState<'search' | 'calculator' | 'web' | null>(null);
+  const [selectedTool, setSelectedTool] = useState<'search' | 'web' | null>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -29,19 +29,9 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     if (message.startsWith('/cari ')) {
       setSelectedTool('search');
       setMessage(message.replace('/cari ', '')); // Remove command, keep the query
-    } else if (message.startsWith('/kalkulator ')) {
-      setSelectedTool('calculator');
-      setMessage(message.replace('/kalkulator ', '')); // Remove command, keep the query
     } else if (message.startsWith('/web ')) {
       setSelectedTool('web');
       setMessage(message.replace('/web ', '')); // Remove command, keep the query
-    } else if (message.startsWith('/clear')) {
-      // Auto-send /clear command
-      if (message === '/clear') {
-        onSendMessage('/clear');
-        setMessage("");
-        setSelectedTool(null);
-      }
     }
   }, [message, onSendMessage]);
 
@@ -51,9 +41,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
       let finalMessage = message.trim();
       
       // Add command prefix automatically if tool is selected
-      if (selectedTool === 'calculator') {
-        finalMessage = `/kalkulator ${finalMessage}`;
-      } else if (selectedTool === 'search') {
+      if (selectedTool === 'search') {
         finalMessage = `/cari ${finalMessage}`;
       } else if (selectedTool === 'web') {
         finalMessage = `/web ${finalMessage}`;
@@ -78,15 +66,9 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     }
   };
 
-  const handleToolSelect = (tool: 'calculator' | 'search' | 'web' | 'clear') => {
-    if (tool === 'clear') {
-      onSendMessage('/clear');
-      setMessage("");
-      setSelectedTool(null);
-    } else {
-      setSelectedTool(tool);
-      setMessage(""); // Don't pre-fill with command
-    }
+  const handleToolSelect = (tool: 'search' | 'web') => {
+    setSelectedTool(tool);
+    setMessage(""); // Don't pre-fill with command
   };
 
   const handleRemoveTool = () => {
@@ -117,24 +99,20 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
   const getPlaceholder = () => {
     if (selectedTool === 'search') {
       return "Ketik pencarian Anda...";
-    } else if (selectedTool === 'calculator') {
-      return "Ketik perhitungan Anda... (contoh: 5+5=10)";
     } else if (selectedTool === 'web') {
       return "Ketik pertanyaan dan URL... (contoh: ambil fungsi yang ada di web https://example.com)";
     }
     return "Message FireFlies...";
   };
 
-  const getToolLabel = (tool: 'search' | 'calculator' | 'web') => {
+  const getToolLabel = (tool: 'search' | 'web') => {
     if (tool === 'search') return 'Cari';
-    if (tool === 'calculator') return 'Kalkulator';
     if (tool === 'web') return 'Ekstrak Web';
     return '';
   };
 
-  const getToolIcon = (tool: 'search' | 'calculator' | 'web') => {
+  const getToolIcon = (tool: 'search' | 'web') => {
     if (tool === 'search') return <Search className="w-4 h-4" />;
-    if (tool === 'calculator') return <Calculator className="w-4 h-4" />;
     if (tool === 'web') return <Globe className="w-4 h-4" />;
     return null;
   };
@@ -196,17 +174,9 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
                     <Search className="w-4 h-4 mr-2" />
                     Pencarian web
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleToolSelect('calculator')}>
-                    <Calculator className="w-4 h-4 mr-2" />
-                    Kalkulator
-                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleToolSelect('web')}>
                     <Globe className="w-4 h-4 mr-2" />
                     Ekstrak Website
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleToolSelect('clear')}>
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    Clear Context
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

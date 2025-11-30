@@ -65,33 +65,6 @@ export async function searchAndFetchContent(query: string): Promise<{url: string
   }
 }
 
-// Calculator utility
-export const calculator = {
-  add: (a: number, b: number) => a + b,
-  subtract: (a: number, b: number) => a - b,
-  multiply: (a: number, b: number) => a * b,
-  divide: (a: number, b: number) => b !== 0 ? a / b : 'Error: Cannot divide by zero',
-  
-  evaluate: (expression: string) => {
-    try {
-      // Clean the expression to only allow safe math operations
-      const sanitized = expression.replace(/[^0-9+\-*/().\s]/g, '');
-      if (!sanitized) return 'Error: Invalid expression';
-      
-      // Use Function constructor for safe evaluation
-      const result = Function(`"use strict"; return (${sanitized})`)();
-      
-      if (typeof result === 'number' && !isNaN(result)) {
-        return result;
-      } else {
-        return 'Error: Invalid calculation result';
-      }
-    } catch {
-      return 'Error: Invalid expression';
-    }
-  }
-};
-
 // This function is now deprecated - use the Edge Function instead
 export async function getOllamaResponse(prompt: string, ollamaUrl?: string): Promise<string> {
   return 'This function is deprecated. Use the Edge Function instead.';

@@ -9,7 +9,7 @@ import { Menu, LogOut, CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
-import { searchAndFetchContent, getWebpageContent, calculator } from "@/utils/ragUtils";
+import { searchAndFetchContent, getWebpageContent } from "@/utils/ragUtils";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { useSelectedModel } from "@/contexts/ModelContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -363,33 +363,7 @@ export const Chat = () => {
       let finalResponse = '';
       
       // Check for RAG commands
-      if (finalContent.toLowerCase().startsWith('/clear')) {
-        // Send clear command to Ollama
-        try {
-          console.log('🤖 Using model for clear:', targetModel);
-          const { data: ollamaData, error } = await supabase.functions.invoke('ollama-proxy', {
-            body: { prompt: '/clear', model: targetModel }
-          });
-          
-          finalResponse = error ? '❌ Failed to clear context. Please try again.' : '🧹 **Memory Cleared!** Context has been reset.';
-        } catch (error) {
-          finalResponse = '❌ Failed to clear context. Please try again.';
-        }
-        
-        // Create AI message with final response
-        const aiMessage: HistoryMessage = {
-          id: generateUniqueId(),
-          content: finalResponse,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        await saveMessage(activeChatId, finalResponse, 'assistant');
-        setIsTyping(false);
-        return;
-      } 
-      
-      else if (finalContent.toLowerCase().startsWith('/cari ')) {
+      if (finalContent.toLowerCase().startsWith('/cari ')) {
         const query = finalContent.substring(6).trim();
         if (query) {
           const aiMessageId = generateUniqueId();
@@ -464,39 +438,6 @@ export const Chat = () => {
           await saveMessage(activeChatId, finalResponse, 'assistant');
           setIsTyping(false);
         }
-        return;
-      }
-      
-      else if (finalContent.toLowerCase().startsWith('/kalkulator ')) {
-        const expression = finalContent.substring(12).trim();
-        if (expression) {
-          const result = calculator.evaluate(expression);
-          finalResponse = `🔢 **Hasil Perhitungan:**\n\n${expression} = **${result}**`;
-          
-          if (typeof result === 'number') {
-            // Send to AI for explanation if it's a valid calculation
-            const ragPrompt = `Pengguna melakukan perhitungan: ${expression} = ${result}. Berikan penjelasan singkat tentang perhitungan ini dalam Bahasa Indonesia, termasuk langkah-langkah jika perlu.`;
-            console.log('🤖 Using model for calculator:', targetModel);
-            const { data: ollamaData, error } = await supabase.functions.invoke('ollama-proxy', {
-              body: { prompt: ragPrompt, model: targetModel }
-            });
-            const explanation = error ? 'Maaf, tidak dapat memberikan penjelasan saat ini.' : ollamaData?.response;
-            finalResponse += `\n\n📝 **Penjelasan:**\n${explanation}`;
-          }
-        } else {
-          finalResponse = 'Mohon masukkan ekspresi matematika setelah /kalkulator (contoh: /kalkulator 2 + 2 * 5)';
-        }
-        
-        // Create AI message with final response
-        const aiMessage: HistoryMessage = {
-          id: generateUniqueId(),
-          content: finalResponse,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        await saveMessage(activeChatId, finalResponse, 'assistant');
-        setIsTyping(false);
         return;
       }
 
@@ -776,12 +717,12 @@ export const Chat = () => {
     }
   };
 
-  const handleToolUse = async (tool: 'calculator' | 'search', query: string) => {
+  const handleToolUse = async (tool: 'search' | 'web', query: string) => {
     // This function is now mostly for legacy support
     // The main RAG functionality is handled in handleSendMessage
     toast({
       title: "Info",
-      description: "Gunakan perintah /kalkulator atau /cari di chat untuk menggunakan alat RAG",
+      description: "Gunakan perintah /cari atau /web di chat untuk menggunakan alat RAG",
     });
   };
 
