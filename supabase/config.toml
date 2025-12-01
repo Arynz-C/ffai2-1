@@ -2,3 +2,6 @@ project_id = "cdxybmnpkkdkspgxvnfp"
 
 [functions.web-scraper]
 verify_jwt = false
+
+[functions.document-processor]
+verify_jwt = false
