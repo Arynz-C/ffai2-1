@@ -1,6 +1,6 @@
 // Chat input component
 import { useState, useEffect, useRef } from "react";
-import { Send, Settings, Search, Globe, Square, X, Plus, Image, Upload } from "lucide-react";
+import { Send, Settings, Search, Globe, Square, X, Plus, Image, Upload, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -11,8 +11,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 interface ChatInputProps {
-  onSendMessage: (message: string, image?: File) => void;
-  onToolUse?: (tool: 'search' | 'web', query: string) => void;
+  onSendMessage: (message: string, image?: File, document?: File) => void;
+  onToolUse?: (tool: 'search' | 'web' | 'document', query: string, document?: File) => void;
   onStopGeneration?: () => void;
   disabled?: boolean;
   isGenerating?: boolean;
@@ -20,9 +20,11 @@ interface ChatInputProps {
 
 export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled = false, isGenerating = false }: ChatInputProps) => {
   const [message, setMessage] = useState("");
-  const [selectedTool, setSelectedTool] = useState<'search' | 'web' | null>(null);
+  const [selectedTool, setSelectedTool] = useState<'search' | 'web' | 'document' | null>(null);
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-detect tool commands and trigger UI
   useEffect(() => {
@@ -32,12 +34,15 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     } else if (message.startsWith('/web ')) {
       setSelectedTool('web');
       setMessage(message.replace('/web ', '')); // Remove command, keep the query
+    } else if (message.startsWith('/dokumen ')) {
+      setSelectedTool('document');
+      setMessage(message.replace('/dokumen ', '')); // Remove command, keep the query
     }
   }, [message, onSendMessage]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if ((message.trim() || selectedImage) && !disabled) {
+    if ((message.trim() || selectedImage || selectedDocument) && !disabled) {
       let finalMessage = message.trim();
       
       // Add command prefix automatically if tool is selected
@@ -45,6 +50,8 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
         finalMessage = `/cari ${finalMessage}`;
       } else if (selectedTool === 'web') {
         finalMessage = `/web ${finalMessage}`;
+      } else if (selectedTool === 'document') {
+        finalMessage = `/dokumen ${finalMessage}`;
       }
       
       // If image is selected but no message, provide default message
@@ -52,10 +59,16 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
         finalMessage = "Describe this image:";
       }
       
-      onSendMessage(finalMessage, selectedImage || undefined);
+      // If document is selected but no message, provide default message
+      if (selectedDocument && !finalMessage) {
+        finalMessage = "Baca dan ringkas dokumen ini:";
+      }
+      
+      onSendMessage(finalMessage, selectedImage || undefined, selectedDocument || undefined);
       setMessage("");
       setSelectedTool(null);
       setSelectedImage(null);
+      setSelectedDocument(null);
     }
   };
 
@@ -66,9 +79,14 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     }
   };
 
-  const handleToolSelect = (tool: 'search' | 'web') => {
+  const handleToolSelect = (tool: 'search' | 'web' | 'document') => {
     setSelectedTool(tool);
     setMessage(""); // Don't pre-fill with command
+    
+    // Trigger document input if document tool is selected
+    if (tool === 'document') {
+      setTimeout(() => documentInputRef.current?.click(), 100);
+    }
   };
 
   const handleRemoveTool = () => {
@@ -90,6 +108,33 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
     }
   };
 
+  const handleDocumentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const validTypes = [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+        'text/csv'
+      ];
+      
+      if (validTypes.includes(file.type)) {
+        setSelectedDocument(file);
+      } else {
+        console.error('Invalid file type');
+      }
+    }
+  };
+
+  const handleRemoveDocument = () => {
+    setSelectedDocument(null);
+    if (documentInputRef.current) {
+      documentInputRef.current.value = '';
+    }
+  };
+
   const handleStopGeneration = () => {
     if (onStopGeneration) {
       onStopGeneration();
@@ -101,19 +146,23 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
       return "Ketik pencarian Anda...";
     } else if (selectedTool === 'web') {
       return "Ketik pertanyaan dan URL... (contoh: ambil fungsi yang ada di web https://example.com)";
+    } else if (selectedTool === 'document') {
+      return "Upload dokumen dan tanyakan sesuatu... (opsional)";
     }
     return "Message FireFlies...";
   };
 
-  const getToolLabel = (tool: 'search' | 'web') => {
+  const getToolLabel = (tool: 'search' | 'web' | 'document') => {
     if (tool === 'search') return 'Cari';
     if (tool === 'web') return 'Ekstrak Web';
+    if (tool === 'document') return 'Baca Dokumen';
     return '';
   };
 
-  const getToolIcon = (tool: 'search' | 'web') => {
+  const getToolIcon = (tool: 'search' | 'web' | 'document') => {
     if (tool === 'search') return <Search className="w-4 h-4" />;
     if (tool === 'web') return <Globe className="w-4 h-4" />;
+    if (tool === 'document') return <FileText className="w-4 h-4" />;
     return null;
   };
 
@@ -152,6 +201,15 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
                 >
                   <Image className="w-4 h-4" />
                 </Button>
+                
+                {/* Document upload button (hidden input) */}
+                <input
+                  ref={documentInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.xlsx,.xls,.csv"
+                  onChange={handleDocumentSelect}
+                  className="hidden"
+                />
               </>
             )}
 
@@ -178,6 +236,10 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
                     <Globe className="w-4 h-4 mr-2" />
                     Ekstrak Website
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleToolSelect('document')}>
+                    <FileText className="w-4 h-4 mr-2" />
+                    Baca Dokumen
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
@@ -196,7 +258,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
             
             <Button
               type="submit"
-              disabled={(!message.trim() && !selectedImage) || disabled}
+              disabled={(!message.trim() && !selectedImage && !selectedDocument) || disabled}
               size="sm"
               className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50 hover-scale btn-animated"
             >
@@ -228,11 +290,30 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
         {selectedImage && (
           <div className="flex items-center gap-2 mt-3 animate-fade-in">
             <div className="flex items-center gap-2 bg-muted rounded-full px-3 py-1.5 text-sm border border-border">
-              <Upload className="w-4 h-4" />
+              <Image className="w-4 h-4" />
               <span className="text-foreground">Image: {selectedImage.name}</span>
               <Button
                 type="button"
                 onClick={handleRemoveImage}
+                variant="ghost"
+                size="sm"
+                className="h-5 w-5 p-0 ml-1 text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-3 h-3" />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Document selection chip */}
+        {selectedDocument && (
+          <div className="flex items-center gap-2 mt-3 animate-fade-in">
+            <div className="flex items-center gap-2 bg-muted rounded-full px-3 py-1.5 text-sm border border-border">
+              <FileText className="w-4 h-4" />
+              <span className="text-foreground">Dokumen: {selectedDocument.name}</span>
+              <Button
+                type="button"
+                onClick={handleRemoveDocument}
                 variant="ghost"
                 size="sm"
                 className="h-5 w-5 p-0 ml-1 text-muted-foreground hover:text-foreground"
