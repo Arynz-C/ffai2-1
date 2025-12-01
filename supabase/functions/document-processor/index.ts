@@ -22,10 +22,10 @@ serve(async (req) => {
 
     switch (action) {
       case 'parse-pdf': {
-        // Parse PDF using pdf-parse
-        const { default: pdfParse } = await import('npm:pdf-parse@1.1.1');
+        // Parse PDF using pdf-parse from esm.sh
+        const pdfParse = await import('https://esm.sh/pdf-parse@1.1.1');
         const buffer = Uint8Array.from(atob(fileData), c => c.charCodeAt(0));
-        const pdfData = await pdfParse(buffer);
+        const pdfData = await pdfParse.default(buffer);
         
         console.log(`✅ PDF parsed: ${pdfData.numpages} pages, ${pdfData.text.length} characters`);
         
@@ -61,8 +61,8 @@ serve(async (req) => {
       }
 
       case 'parse-word': {
-        // Parse Word document using mammoth
-        const { default: mammoth } = await import('npm:mammoth@1.6.0');
+        // Parse Word document using mammoth from esm.sh
+        const mammoth = await import('https://esm.sh/mammoth@1.8.0');
         const buffer = Uint8Array.from(atob(fileData), c => c.charCodeAt(0));
         const result = await mammoth.extractRawText({ buffer });
         
@@ -77,11 +77,11 @@ serve(async (req) => {
       }
 
       case 'create-pdf': {
-        // Create PDF using pdf-lib
-        const { PDFDocument, rgb, StandardFonts } = await import('npm:pdf-lib@1.17.1');
-        const pdfDoc = await PDFDocument.create();
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        // Create PDF using pdf-lib from esm.sh
+        const pdfLib = await import('https://esm.sh/pdf-lib@1.17.1');
+        const pdfDoc = await pdfLib.PDFDocument.create();
+        const font = await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica);
+        const boldFont = await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBold);
         
         let page = pdfDoc.addPage([595.28, 841.89]); // A4 size
         let yPosition = 800;
@@ -96,7 +96,7 @@ serve(async (req) => {
             y: yPosition,
             size: 18,
             font: boldFont,
-            color: rgb(0, 0, 0),
+            color: pdfLib.rgb(0, 0, 0),
           });
           yPosition -= 40;
         }
@@ -123,7 +123,7 @@ serve(async (req) => {
                 y: yPosition,
                 size: 12,
                 font: font,
-                color: rgb(0, 0, 0),
+                color: pdfLib.rgb(0, 0, 0),
               });
               yPosition -= lineHeight;
               currentLine = word;
@@ -143,7 +143,7 @@ serve(async (req) => {
               y: yPosition,
               size: 12,
               font: font,
-              color: rgb(0, 0, 0),
+              color: pdfLib.rgb(0, 0, 0),
             });
             yPosition -= lineHeight;
           }
@@ -218,17 +218,17 @@ serve(async (req) => {
       }
 
       case 'create-word': {
-        // Create Word document using docx
-        const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import('npm:docx@8.5.0');
+        // Create Word document using docx from esm.sh
+        const docx = await import('https://esm.sh/docx@8.5.0');
         
         const paragraphs = [];
         
         // Title
         if (title) {
           paragraphs.push(
-            new Paragraph({
+            new docx.Paragraph({
               text: title,
-              heading: HeadingLevel.HEADING_1,
+              heading: docx.HeadingLevel.HEADING_1,
             })
           );
         }
@@ -237,22 +237,22 @@ serve(async (req) => {
         const contentParagraphs = content.split('\n\n');
         for (const para of contentParagraphs) {
           paragraphs.push(
-            new Paragraph({
+            new docx.Paragraph({
               children: [
-                new TextRun(para)
+                new docx.TextRun(para)
               ],
             })
           );
         }
         
-        const doc = new Document({
+        const doc = new docx.Document({
           sections: [{
             properties: {},
             children: paragraphs,
           }],
         });
         
-        const docBuffer = await Packer.toBuffer(doc);
+        const docBuffer = await docx.Packer.toBuffer(doc);
         const fileNameWithExt = fileName || `document-${Date.now()}.docx`;
         
         // Upload to Supabase Storage
