@@ -111,16 +111,36 @@ serve(async (req) => {
       }
 
       case 'parse-word': {
-        // Word parsing is complex in Deno, return error with suggestion
-        console.log('⚠️ Word parsing not fully supported in edge function');
-        return new Response(JSON.stringify({
-          error: 'Word document parsing not available',
-          suggestion: 'Please convert to PDF or use client-side processing',
-          text: 'Word document processing requires additional setup. Please convert your document to PDF format for better compatibility.'
-        }), {
-          status: 422,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        try {
+          // Try using mammoth for Word document parsing
+          const mammoth = await import('https://esm.sh/mammoth@1.6.0');
+          
+          const result = await mammoth.extractRawText({ 
+            buffer: bytes 
+          });
+          
+          const text = result.value;
+          console.log(`✅ Word parsed: ${text.length} characters`);
+          
+          return new Response(JSON.stringify({
+            text: text,
+            messages: result.messages
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (wordError) {
+          console.error('Word parsing error:', wordError);
+          // Fallback: provide a helpful error message
+          return new Response(JSON.stringify({
+            error: 'Word document parsing failed',
+            suggestion: 'Try converting to PDF for better compatibility',
+            details: wordError instanceof Error ? wordError.message : 'Unknown error',
+            text: 'Maaf, dokumen Word ini tidak dapat dibaca. Silakan coba konversi ke PDF terlebih dahulu.'
+          }), {
+            status: 422,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
       }
 
       case 'create-pdf': {
