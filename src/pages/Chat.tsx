@@ -313,11 +313,20 @@ export const Chat = () => {
         }),
       });
       
-      if (!parseResponse.ok) {
-        throw new Error('Failed to parse document');
+      const parsedData = await parseResponse.json();
+      
+      // Handle Word document warning (422 status)
+      if (parseResponse.status === 422 && action === 'parse-word') {
+        const warningMsg = `⚠️ **Format dokumen Word tidak sepenuhnya didukung**\n\n${parsedData.suggestion || 'Silakan convert dokumen ke PDF untuk hasil terbaik.'}\n\nApakah Anda ingin saya bantu dengan cara lain?`;
+        updateMessageContent(messageId, warningMsg);
+        await saveMessage(chatId, warningMsg, 'assistant');
+        return;
       }
       
-      const parsedData = await parseResponse.json();
+      if (!parseResponse.ok) {
+        throw new Error(parsedData.error || 'Failed to parse document');
+      }
+      
       console.log('✅ Document parsed successfully');
       
       // Extract text from parsed data
@@ -333,11 +342,17 @@ export const Chat = () => {
           .join('\n\n');
       }
       
-      if (!documentText) {
-        throw new Error('No text extracted from document');
+      if (!documentText || documentText.length < 10) {
+        throw new Error('No meaningful text extracted from document');
       }
       
-      updateMessageContent(messageId, `📄 Menganalisis konten dokumen...`);
+      updateMessageContent(messageId, `📄 Menganalisis konten dokumen (${documentText.length} karakter)...`);
+      
+      // Truncate if too long (keep first 15000 chars)
+      const truncatedText = documentText.substring(0, 15000);
+      if (documentText.length > 15000) {
+        console.log(`⚠️ Document truncated from ${documentText.length} to 15000 characters`);
+      }
       
       // Now send to AI with the extracted text
       const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
@@ -347,7 +362,7 @@ export const Chat = () => {
           'Authorization': `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({
-          prompt: `Dokumen: ${fileName}\n\nIsi dokumen:\n${documentText.substring(0, 10000)}\n\nPertanyaan: ${query}`,
+          prompt: `Dokumen: ${fileName}\n\nIsi dokumen:\n${truncatedText}\n\nPertanyaan: ${query}`,
           model: selectedModel,
           useTools: false,
           messages: [
@@ -357,14 +372,14 @@ export const Chat = () => {
             },
             {
               role: 'user',
-              content: `Dokumen: ${fileName}\n\nIsi dokumen:\n${documentText.substring(0, 10000)}\n\nPertanyaan: ${query}`
+              content: `Dokumen: ${fileName}\n\nIsi dokumen:\n${truncatedText}\n\nPertanyaan: ${query}`
             }
           ]
         }),
       });
 
       if (!response.ok || !response.body) {
-        throw new Error('Failed to start stream');
+        throw new Error('Failed to start AI stream');
       }
 
       const reader = response.body.getReader();
@@ -387,7 +402,7 @@ export const Chat = () => {
           const data = line.slice(6);
           if (data === '[DONE]') {
             console.log('✅ Stream completed');
-            fullContent += `\n\n📄 **Dokumen:** ${fileName}`;
+            fullContent += `\n\n📄 **Dokumen:** ${fileName} (${Math.round(documentText.length / 1000)}KB text)`;
             updateMessageContent(messageId, fullContent);
             await saveMessage(chatId, fullContent, 'assistant');
             return;
@@ -413,7 +428,7 @@ export const Chat = () => {
       
     } catch (error) {
       console.error('Error in document RAG:', error);
-      const errorMsg = `Maaf, terjadi kesalahan saat memproses dokumen: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      const errorMsg = `Maaf, terjadi kesalahan saat memproses dokumen: ${error instanceof Error ? error.message : 'Unknown error'}\n\n💡 **Tips:**\n- Pastikan dokumen tidak rusak\n- Coba convert ke PDF jika format Word\n- Ukuran file maksimal 10MB`;
       updateMessageContent(messageId, errorMsg);
       await saveMessage(chatId, errorMsg, 'assistant');
     }
