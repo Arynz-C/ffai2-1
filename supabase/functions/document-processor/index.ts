@@ -116,7 +116,7 @@ serve(async (req) => {
           const mammoth = await import('https://esm.sh/mammoth@1.6.0');
           
           const result = await mammoth.extractRawText({ 
-            buffer: bytes 
+            arrayBuffer: bytes.buffer 
           });
           
           const text = result.value;
