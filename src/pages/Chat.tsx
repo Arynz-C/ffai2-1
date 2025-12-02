@@ -729,6 +729,13 @@ export const Chat = () => {
           });
           
           if (!streamResponse.ok) {
+            const errorData = await streamResponse.json().catch(() => ({}));
+            
+            // Handle premium model limit error
+            if (streamResponse.status === 403 && errorData.details?.includes('premium model request limit')) {
+              throw new Error('PREMIUM_LIMIT_REACHED');
+            }
+            
             throw new Error(`Streaming error: ${streamResponse.status}`);
           }
           
@@ -839,7 +846,10 @@ export const Chat = () => {
         
         // Show user-friendly error message
         let errorMsg = 'Tidak dapat terhubung ke AI. ';
-        if (fetchError.message.includes('502')) {
+        
+        if (fetchError.message === 'PREMIUM_LIMIT_REACHED') {
+          errorMsg = '⚠️ **Limit Model Premium Tercapai**\n\nAnda telah mencapai batas penggunaan model premium. Silakan:\n\n1. Gunakan model gratis (llama3.3, qwen3, dll)\n2. Atau upgrade ke paket berbayar untuk akses unlimited\n\nUbah model di sidebar kiri atau tunggu hingga limit reset.';
+        } else if (fetchError.message.includes('502')) {
           errorMsg += 'Server AI sedang bermasalah. Silakan coba lagi dalam beberapa saat.';
         } else if (fetchError.message.includes('timeout')) {
           errorMsg += 'Koneksi timeout. Silakan coba lagi.';
