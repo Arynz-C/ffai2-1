@@ -30,11 +30,11 @@ serve(async (req) => {
     switch (action) {
       case 'parse-pdf': {
         try {
-          // Use pdfjs-dist for PDF parsing (more Deno-compatible)
-          const pdfjsLib = await import('https://esm.sh/pdfjs-dist@3.11.174/build/pdf.mjs');
+          // Use pdfjs-serverless for PDF parsing (Deno/serverless friendly)
+          const { getDocument } = await import('https://esm.sh/pdfjs-serverless');
           
           // Configure PDF.js
-          const loadingTask = pdfjsLib.getDocument({
+          const loadingTask = getDocument({
             data: bytes,
             useSystemFonts: true,
             verbosity: 0
