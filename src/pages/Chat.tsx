@@ -279,7 +279,6 @@ export const Chat = () => {
       await saveMessage(chatId, errorMsg, 'assistant');
     }
   };
-
   // Document RAG - Parse document and analyze with AI
   const handleDocumentRAG = async (query: string, base64Document: string, fileName: string, fileType: string, messageId: string, chatId: string) => {
     try {
@@ -354,7 +353,24 @@ export const Chat = () => {
         console.log(`⚠️ Document truncated from ${documentText.length} to 15000 characters`);
       }
       
-      // Now send to AI with the extracted text
+      // IMPORTANT: Save document content as a context message in history
+      // This allows follow-up questions to access the document content
+      const documentContextMessage = `[DOKUMEN: ${fileName}]\n\n${truncatedText}`;
+      await saveMessage(chatId, documentContextMessage, 'user');
+      
+      // Add to local state for immediate access
+      const contextMsgId = generateUniqueId();
+      addMessageToLocal(chatId, {
+        id: contextMsgId,
+        content: documentContextMessage,
+        role: 'user',
+        timestamp: new Date()
+      });
+      
+      // Get updated chat history including the document
+      const chatHistory = getChatHistoryForAI(chatId);
+      
+      // Now send to AI with the extracted text and history
       const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
         method: 'POST',
         headers: {
@@ -362,17 +378,17 @@ export const Chat = () => {
           'Authorization': `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({
-          prompt: `Dokumen: ${fileName}\n\nIsi dokumen:\n${truncatedText}\n\nPertanyaan: ${query}`,
+          prompt: query,
           model: selectedModel,
           useTools: false,
-          messages: [
-            {
-              role: 'system',
-              content: 'Kamu adalah asisten AI yang membantu menganalisis dokumen. Berikan jawaban yang akurat dan jelas dalam Bahasa Indonesia berdasarkan isi dokumen.'
-            },
+          history: [
+            ...chatHistory.map(msg => ({
+              role: msg.role,
+              content: msg.content
+            })),
             {
               role: 'user',
-              content: `Dokumen: ${fileName}\n\nIsi dokumen:\n${truncatedText}\n\nPertanyaan: ${query}`
+              content: `Pertanyaan tentang dokumen di atas: ${query}`
             }
           ]
         }),
@@ -1116,9 +1132,11 @@ export const Chat = () => {
                 </div>
               )}
               
-              {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
-              ))}
+              {messages
+                .filter((message) => !message.content.startsWith('[DOKUMEN:'))
+                .map((message) => (
+                  <ChatMessage key={message.id} message={message} />
+                ))}
               
               {isTyping && <TypingIndicator />}
             </div>
