@@ -279,180 +279,6 @@ export const Chat = () => {
       await saveMessage(chatId, errorMsg, 'assistant');
     }
   };
-  // Document RAG - Parse document and analyze with AI
-  const handleDocumentRAG = async (query: string, base64Document: string, fileName: string, fileType: string, messageId: string, chatId: string) => {
-    try {
-      console.log('📄 Starting document processing for:', fileName);
-      
-      // Determine action based on file type
-      let action = 'parse-pdf';
-      if (fileType.includes('word') || fileType.includes('document')) {
-        action = 'parse-word';
-      } else if (fileType.includes('spreadsheet') || fileType.includes('excel')) {
-        action = 'parse-excel';
-      }
-      
-      updateMessageContent(messageId, `📄 Membaca dokumen ${fileName}...`);
-      
-      // Call document processor edge function
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-      
-      const parseResponse = await fetch(`${SUPABASE_URL}/functions/v1/document-processor`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-        },
-        body: JSON.stringify({
-          action,
-          fileData: base64Document,
-          fileName,
-          fileType
-        }),
-      });
-      
-      const parsedData = await parseResponse.json();
-      
-      // Handle Word document warning (422 status)
-      if (parseResponse.status === 422 && action === 'parse-word') {
-        const warningMsg = `⚠️ **Format dokumen Word tidak sepenuhnya didukung**\n\n${parsedData.suggestion || 'Silakan convert dokumen ke PDF untuk hasil terbaik.'}\n\nApakah Anda ingin saya bantu dengan cara lain?`;
-        updateMessageContent(messageId, warningMsg);
-        await saveMessage(chatId, warningMsg, 'assistant');
-        return;
-      }
-      
-      if (!parseResponse.ok) {
-        throw new Error(parsedData.error || 'Failed to parse document');
-      }
-      
-      console.log('✅ Document parsed successfully');
-      
-      // Extract text from parsed data
-      let documentText = '';
-      if (parsedData.text) {
-        documentText = parsedData.text;
-      } else if (parsedData.sheets) {
-        // For Excel, combine all sheets
-        documentText = Object.entries(parsedData.sheets)
-          .map(([sheetName, data]: [string, any]) => {
-            return `Sheet: ${sheetName}\n${JSON.stringify(data, null, 2)}`;
-          })
-          .join('\n\n');
-      }
-      
-      if (!documentText || documentText.length < 10) {
-        throw new Error('No meaningful text extracted from document');
-      }
-      
-      updateMessageContent(messageId, `📄 Menganalisis konten dokumen (${documentText.length} karakter)...`);
-      
-      // Truncate if too long (keep first 15000 chars)
-      const truncatedText = documentText.substring(0, 15000);
-      if (documentText.length > 15000) {
-        console.log(`⚠️ Document truncated from ${documentText.length} to 15000 characters`);
-      }
-      
-      // IMPORTANT: Save document content as a context message in history
-      // This allows follow-up questions to access the document content
-      const documentContextMessage = `[DOKUMEN: ${fileName}]\n\n${truncatedText}`;
-      await saveMessage(chatId, documentContextMessage, 'user');
-      
-      // Add to local state for immediate access
-      const contextMsgId = generateUniqueId();
-      addMessageToLocal(chatId, {
-        id: contextMsgId,
-        content: documentContextMessage,
-        role: 'user',
-        timestamp: new Date()
-      });
-      
-      // Get updated chat history including the document
-      const chatHistory = getChatHistoryForAI(chatId);
-      
-      // Now send to AI with the extracted text and history
-      const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-        },
-        body: JSON.stringify({
-          prompt: query,
-          model: selectedModel,
-          useTools: false,
-          stream: true,
-          history: [
-            {
-              role: 'system',
-              content: 'Kamu adalah asisten AI yang membantu menganalisis dokumen. Berikan jawaban yang akurat dan jelas dalam Bahasa Indonesia berdasarkan isi dokumen.'
-            },
-            ...chatHistory.map(msg => ({
-              role: msg.role,
-              content: msg.content
-            }))
-          ]
-        }),
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error('Failed to start AI stream');
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let fullContent = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          
-          try {
-            const parsed = JSON.parse(line);
-            
-            // Handle Ollama NDJSON format
-            if (parsed.message?.content) {
-              fullContent += parsed.message.content;
-              updateMessageContent(messageId, fullContent);
-            }
-            
-            // Handle SSE format (from useTools)
-            if (parsed.type === 'content') {
-              fullContent += parsed.content;
-              updateMessageContent(messageId, fullContent);
-            } else if (parsed.type === 'error') {
-              fullContent += `\n\n❌ Error: ${parsed.content}`;
-              updateMessageContent(messageId, fullContent);
-            }
-            
-            if (parsed.done) {
-              console.log('✅ Stream completed');
-            }
-          } catch (e) {
-            // Skip unparseable lines
-          }
-        }
-      }
-
-      fullContent += `\n\n📄 **Dokumen:** ${fileName} (${Math.round(documentText.length / 1000)}KB text)`;
-      updateMessageContent(messageId, fullContent);
-      await saveMessage(chatId, fullContent, 'assistant');
-      
-    } catch (error) {
-      console.error('Error in document RAG:', error);
-      const errorMsg = `Maaf, terjadi kesalahan saat memproses dokumen: ${error instanceof Error ? error.message : 'Unknown error'}\n\n💡 **Tips:**\n- Pastikan dokumen tidak rusak\n- Coba convert ke PDF jika format Word\n- Ukuran file maksimal 10MB`;
-      updateMessageContent(messageId, errorMsg);
-      await saveMessage(chatId, errorMsg, 'assistant');
-    }
-  };
 
   const handleStopGeneration = () => {
     if (abortController) {
@@ -469,7 +295,7 @@ export const Chat = () => {
     }
   };
 
-  const handleSendMessage = async (content: string, image?: File, document?: File) => {
+  const handleSendMessage = async (content: string, image?: File) => {
     console.log('🤖 Using model:', selectedModel);
     
     // Check if user has subscription or is on free plan
@@ -502,28 +328,6 @@ export const Chat = () => {
       console.log('🖼️ Image converted to base64, length:', base64Image.length);
     }
 
-    // Handle document uploads
-    let base64Document = null;
-    let documentFileName = '';
-    let documentType = '';
-    
-    if (document) {
-      console.log('📄 Document detected:', document.name, document.type);
-      documentFileName = document.name;
-      documentType = document.type;
-      
-      // Convert document to base64
-      base64Document = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64 = (reader.result as string).split(',')[1];
-          resolve(base64);
-        };
-        reader.readAsDataURL(document);
-      });
-      
-      console.log('📄 Document converted to base64, length:', base64Document.length);
-    }
 
     // Ensure we have a current chat session
     let activeChatId = currentChatId;
@@ -638,38 +442,6 @@ export const Chat = () => {
         return;
       }
       
-      else if (finalContent.toLowerCase().startsWith('/dokumen ') || base64Document) {
-        if (!base64Document) {
-          finalResponse = 'Mohon upload dokumen terlebih dahulu dengan memilih tool "Baca Dokumen"';
-          const aiMessage: HistoryMessage = {
-            id: generateUniqueId(),
-            content: finalResponse,
-            role: 'assistant',
-            timestamp: new Date()
-          };
-          addMessageToLocal(activeChatId, aiMessage);
-          await saveMessage(activeChatId, finalResponse, 'assistant');
-          setIsTyping(false);
-          return;
-        }
-        
-        const query = finalContent.toLowerCase().startsWith('/dokumen ') 
-          ? finalContent.substring(9).trim()
-          : finalContent.trim() || 'Baca dan ringkas dokumen ini';
-        
-        const aiMessageId = generateUniqueId();
-        const aiMessage: HistoryMessage = {
-          id: aiMessageId,
-          content: `📄 Memproses dokumen ${documentFileName}...`,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        setIsTyping(false);
-        
-        await handleDocumentRAG(query, base64Document, documentFileName, documentType, aiMessageId, activeChatId);
-        return;
-      }
 
       // Regular chat - Call Ollama via Edge Function
       try {
@@ -1136,11 +908,9 @@ export const Chat = () => {
                 </div>
               )}
               
-              {messages
-                .filter((message) => !message.content.startsWith('[DOKUMEN:'))
-                .map((message) => (
-                  <ChatMessage key={message.id} message={message} />
-                ))}
+              {messages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
+              ))}
               
               {isTyping && <TypingIndicator />}
             </div>
