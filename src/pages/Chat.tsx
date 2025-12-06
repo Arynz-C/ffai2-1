@@ -378,10 +378,14 @@ export const Chat = () => {
           'Authorization': `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({
-          prompt: query,
+          prompt: `Pertanyaan tentang dokumen di atas: ${query}`,
           model: selectedModel,
           useTools: false,
-          history: [
+          messages: [
+            {
+              role: 'system',
+              content: 'Kamu adalah asisten AI yang membantu menganalisis dokumen. Berikan jawaban yang akurat dan jelas dalam Bahasa Indonesia berdasarkan isi dokumen.'
+            },
             ...chatHistory.map(msg => ({
               role: msg.role,
               content: msg.content
