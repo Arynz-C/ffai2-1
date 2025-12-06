@@ -378,10 +378,11 @@ export const Chat = () => {
           'Authorization': `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({
-          prompt: `Pertanyaan tentang dokumen di atas: ${query}`,
+          prompt: query,
           model: selectedModel,
           useTools: false,
-          messages: [
+          stream: true,
+          history: [
             {
               role: 'system',
               content: 'Kamu adalah asisten AI yang membantu menganalisis dokumen. Berikan jawaban yang akurat dan jelas dalam Bahasa Indonesia berdasarkan isi dokumen.'
@@ -389,11 +390,7 @@ export const Chat = () => {
             ...chatHistory.map(msg => ({
               role: msg.role,
               content: msg.content
-            })),
-            {
-              role: 'user',
-              content: `Pertanyaan tentang dokumen di atas: ${query}`
-            }
+            }))
           ]
         }),
       });
@@ -416,21 +413,18 @@ export const Chat = () => {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (!line.trim() || line.startsWith(':')) continue;
-          if (!line.startsWith('data: ')) continue;
-
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            console.log('✅ Stream completed');
-            fullContent += `\n\n📄 **Dokumen:** ${fileName} (${Math.round(documentText.length / 1000)}KB text)`;
-            updateMessageContent(messageId, fullContent);
-            await saveMessage(chatId, fullContent, 'assistant');
-            return;
-          }
-
+          if (!line.trim()) continue;
+          
           try {
-            const parsed = JSON.parse(data);
+            const parsed = JSON.parse(line);
             
+            // Handle Ollama NDJSON format
+            if (parsed.message?.content) {
+              fullContent += parsed.message.content;
+              updateMessageContent(messageId, fullContent);
+            }
+            
+            // Handle SSE format (from useTools)
             if (parsed.type === 'content') {
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
@@ -438,12 +432,18 @@ export const Chat = () => {
               fullContent += `\n\n❌ Error: ${parsed.content}`;
               updateMessageContent(messageId, fullContent);
             }
+            
+            if (parsed.done) {
+              console.log('✅ Stream completed');
+            }
           } catch (e) {
-            console.error('Error parsing SSE:', e);
+            // Skip unparseable lines
           }
         }
       }
 
+      fullContent += `\n\n📄 **Dokumen:** ${fileName} (${Math.round(documentText.length / 1000)}KB text)`;
+      updateMessageContent(messageId, fullContent);
       await saveMessage(chatId, fullContent, 'assistant');
       
     } catch (error) {
