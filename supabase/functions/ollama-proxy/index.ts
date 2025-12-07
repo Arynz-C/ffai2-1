@@ -199,15 +199,10 @@ serve(async (req) => {
           },
         };
 
-        // Initialize conversation messages with system prompt
-        const systemMessage = {
-          role: 'system',
-          content: 'Kamu adalah asisten AI yang membantu pengguna dengan pencarian web. Gunakan tools webSearch untuk mencari informasi dan webFetch untuk membaca konten halaman web. Setelah mendapat hasil dari tools, WAJIB berikan jawaban lengkap dan informatif dalam Bahasa Indonesia berdasarkan informasi yang ditemukan. Jangan hanya menyebutkan sumber, tapi jelaskan isinya secara detail.'
-        };
-        
-        let conversationMessages = messages.length > 0 
-          ? [systemMessage, ...messages] 
-          : [systemMessage, { role: 'user', content: prompt }];
+        // Initialize conversation messages
+        let conversationMessages = messages.length > 0 ? [...messages] : [
+          { role: 'user', content: prompt }
+        ];
 
         // Tool execution loop
         let maxIterations = 5;
@@ -221,26 +216,9 @@ serve(async (req) => {
         // Process in background
         (async () => {
           try {
-            let collectedUrls: string[] = [];
-            
             while (iteration < maxIterations) {
               iteration++;
               console.log(`🔄 Tool calling iteration ${iteration}`);
-
-              // After 3 iterations, stop providing tools to force final response
-              const shouldProvideTools = iteration <= 3;
-              
-              const requestBody: any = {
-                model,
-                messages: conversationMessages,
-                stream: true,
-              };
-              
-              if (shouldProvideTools) {
-                requestBody.tools = [webSearchTool, webFetchTool];
-              }
-              
-              console.log(`📤 Request iteration ${iteration}, tools enabled: ${shouldProvideTools}`);
 
               const ollamaResponse = await fetch('https://ollama.com/api/chat', {
                 method: 'POST',
@@ -248,7 +226,12 @@ serve(async (req) => {
                   'Content-Type': 'application/json',
                   'Authorization': `Bearer ${ollamaApiKey}`
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify({
+                  model,
+                  messages: conversationMessages,
+                  tools: [webSearchTool, webFetchTool],
+                  stream: true,
+                })
               });
 
               if (!ollamaResponse.ok) {
@@ -309,19 +292,8 @@ serve(async (req) => {
                 }
               }
 
-              // If no tool calls, we're done - add sources and signal done
+              // If no tool calls, we're done
               if (!hasToolCalls) {
-                console.log(`✅ Final response complete. Content length: ${accumulatedContent.length}, URLs collected: ${collectedUrls.length}`);
-                
-                // Add source URLs at the end if we have any
-                if (collectedUrls.length > 0) {
-                  const sourcesText = '\n\n---\n📚 **Sumber:**\n' + collectedUrls.map((url, idx) => `${idx + 1}. ${url}`).join('\n');
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({
-                    type: 'content',
-                    content: sourcesText
-                  })}\n\n`));
-                }
-                
                 await writer.write(encoder.encode(`data: [DONE]\n\n`));
                 break;
               }
@@ -389,11 +361,6 @@ serve(async (req) => {
                 } else if (functionName === 'webFetch') {
                   try {
                     console.log(`🌐 Using web-scraper for fetch: ${args.url}`);
-                    
-                    // Collect URL for sources
-                    if (args.url && !collectedUrls.includes(args.url)) {
-                      collectedUrls.push(args.url);
-                    }
                     
                     // Initialize Supabase client
                     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
