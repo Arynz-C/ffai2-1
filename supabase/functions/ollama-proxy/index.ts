@@ -199,10 +199,15 @@ serve(async (req) => {
           },
         };
 
-        // Initialize conversation messages
-        let conversationMessages = messages.length > 0 ? [...messages] : [
-          { role: 'user', content: prompt }
-        ];
+        // Initialize conversation messages with system prompt
+        const systemMessage = {
+          role: 'system',
+          content: 'Kamu adalah asisten AI yang membantu pengguna dengan pencarian web. Gunakan tools webSearch untuk mencari informasi dan webFetch untuk membaca konten halaman web. Setelah mendapat hasil dari tools, WAJIB berikan jawaban lengkap dan informatif dalam Bahasa Indonesia berdasarkan informasi yang ditemukan. Jangan hanya menyebutkan sumber, tapi jelaskan isinya secara detail.'
+        };
+        
+        let conversationMessages = messages.length > 0 
+          ? [systemMessage, ...messages] 
+          : [systemMessage, { role: 'user', content: prompt }];
 
         // Tool execution loop
         let maxIterations = 5;
@@ -292,8 +297,11 @@ serve(async (req) => {
                 }
               }
 
-              // If no tool calls, we're done
+              // If no tool calls, we're done - but make sure we have content
               if (!hasToolCalls) {
+                // If we have accumulated content from this final response, it was already streamed
+                // Just signal done
+                console.log(`✅ Final response complete. Content length: ${accumulatedContent.length}`);
                 await writer.write(encoder.encode(`data: [DONE]\n\n`));
                 break;
               }
