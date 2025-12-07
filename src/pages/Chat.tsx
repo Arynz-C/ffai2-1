@@ -119,8 +119,7 @@ export const Chat = () => {
       let buffer = '';
       let fullContent = '';
       let isLoading = true;
-      let collectedUrls: string[] = [];
-
+      
       // Show simple loading indicator
       updateMessageContent(messageId, '⏳ Mencari informasi...');
       setIsGenerating(true);
@@ -140,13 +139,7 @@ export const Chat = () => {
           const data = line.slice(6);
           if (data === '[DONE]') {
             console.log('✅ Stream completed');
-            // Add source URLs at the end
-            if (collectedUrls.length > 0) {
-              fullContent += '\n\n---\n📚 **Sumber:**\n';
-              collectedUrls.forEach((url, idx) => {
-                fullContent += `${idx + 1}. ${url}\n`;
-              });
-            }
+            // Sources are now added by the server, just save and finish
             updateMessageContent(messageId, fullContent);
             await saveMessage(chatId, fullContent, 'assistant');
             setIsGenerating(false);
@@ -166,13 +159,7 @@ export const Chat = () => {
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
             } else if (parsed.type === 'tool_call') {
-              // Collect URLs from webFetch calls
-              if (parsed.function === 'webFetch' && parsed.arguments?.url) {
-                if (!collectedUrls.includes(parsed.arguments.url)) {
-                  collectedUrls.push(parsed.arguments.url);
-                }
-              }
-              // Don't show tool call text, just keep loading
+              // Tool calls are processed server-side, just keep loading
             } else if (parsed.type === 'error') {
               fullContent += `\n\n❌ Error: ${parsed.content}`;
               updateMessageContent(messageId, fullContent);
@@ -183,13 +170,7 @@ export const Chat = () => {
         }
       }
 
-      // Save final message with sources
-      if (collectedUrls.length > 0 && !fullContent.includes('**Sumber:**')) {
-        fullContent += '\n\n---\n📚 **Sumber:**\n';
-        collectedUrls.forEach((url, idx) => {
-          fullContent += `${idx + 1}. ${url}\n`;
-        });
-      }
+      // Save final message (sources added by server)
       await saveMessage(chatId, fullContent, 'assistant');
       setIsGenerating(false);
       
