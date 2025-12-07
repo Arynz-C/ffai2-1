@@ -221,9 +221,26 @@ serve(async (req) => {
         // Process in background
         (async () => {
           try {
+            let collectedUrls: string[] = [];
+            
             while (iteration < maxIterations) {
               iteration++;
               console.log(`🔄 Tool calling iteration ${iteration}`);
+
+              // After 3 iterations, stop providing tools to force final response
+              const shouldProvideTools = iteration <= 3;
+              
+              const requestBody: any = {
+                model,
+                messages: conversationMessages,
+                stream: true,
+              };
+              
+              if (shouldProvideTools) {
+                requestBody.tools = [webSearchTool, webFetchTool];
+              }
+              
+              console.log(`📤 Request iteration ${iteration}, tools enabled: ${shouldProvideTools}`);
 
               const ollamaResponse = await fetch('https://ollama.com/api/chat', {
                 method: 'POST',
@@ -231,12 +248,7 @@ serve(async (req) => {
                   'Content-Type': 'application/json',
                   'Authorization': `Bearer ${ollamaApiKey}`
                 },
-                body: JSON.stringify({
-                  model,
-                  messages: conversationMessages,
-                  tools: [webSearchTool, webFetchTool],
-                  stream: true,
-                })
+                body: JSON.stringify(requestBody)
               });
 
               if (!ollamaResponse.ok) {
@@ -297,11 +309,19 @@ serve(async (req) => {
                 }
               }
 
-              // If no tool calls, we're done - but make sure we have content
+              // If no tool calls, we're done - add sources and signal done
               if (!hasToolCalls) {
-                // If we have accumulated content from this final response, it was already streamed
-                // Just signal done
-                console.log(`✅ Final response complete. Content length: ${accumulatedContent.length}`);
+                console.log(`✅ Final response complete. Content length: ${accumulatedContent.length}, URLs collected: ${collectedUrls.length}`);
+                
+                // Add source URLs at the end if we have any
+                if (collectedUrls.length > 0) {
+                  const sourcesText = '\n\n---\n📚 **Sumber:**\n' + collectedUrls.map((url, idx) => `${idx + 1}. ${url}`).join('\n');
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({
+                    type: 'content',
+                    content: sourcesText
+                  })}\n\n`));
+                }
+                
                 await writer.write(encoder.encode(`data: [DONE]\n\n`));
                 break;
               }
@@ -369,6 +389,11 @@ serve(async (req) => {
                 } else if (functionName === 'webFetch') {
                   try {
                     console.log(`🌐 Using web-scraper for fetch: ${args.url}`);
+                    
+                    // Collect URL for sources
+                    if (args.url && !collectedUrls.includes(args.url)) {
+                      collectedUrls.push(args.url);
+                    }
                     
                     // Initialize Supabase client
                     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
