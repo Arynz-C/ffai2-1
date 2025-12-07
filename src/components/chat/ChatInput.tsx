@@ -182,7 +182,7 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
               </DropdownMenu>
             )}
 
-            {isGenerating && (
+            {isGenerating ? (
               <Button
                 type="button"
                 onClick={handleStopGeneration}
@@ -192,16 +192,16 @@ export const ChatInput = ({ onSendMessage, onToolUse, onStopGeneration, disabled
               >
                 <Square className="w-4 h-4" />
               </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={(!message.trim() && !selectedImage) || disabled}
+                size="sm"
+                className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50 hover-scale btn-animated"
+              >
+                <Send className="w-4 h-4" />
+              </Button>
             )}
-            
-            <Button
-              type="submit"
-              disabled={(!message.trim() && !selectedImage) || disabled}
-              size="sm"
-              className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50 hover-scale btn-animated"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
           </div>
         </div>
 

@@ -118,7 +118,12 @@ export const Chat = () => {
       const decoder = new TextDecoder();
       let buffer = '';
       let fullContent = '';
-      let isThinking = false;
+      let isLoading = true;
+      let collectedUrls: string[] = [];
+
+      // Show simple loading indicator
+      updateMessageContent(messageId, '⏳ Mencari informasi...');
+      setIsGenerating(true);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -135,6 +140,16 @@ export const Chat = () => {
           const data = line.slice(6);
           if (data === '[DONE]') {
             console.log('✅ Stream completed');
+            // Add source URLs at the end
+            if (collectedUrls.length > 0) {
+              fullContent += '\n\n---\n📚 **Sumber:**\n';
+              collectedUrls.forEach((url, idx) => {
+                fullContent += `${idx + 1}. ${url}\n`;
+              });
+            }
+            updateMessageContent(messageId, fullContent);
+            await saveMessage(chatId, fullContent, 'assistant');
+            setIsGenerating(false);
             return;
           }
 
@@ -142,22 +157,22 @@ export const Chat = () => {
             const parsed = JSON.parse(data);
             
             if (parsed.type === 'thinking') {
-              if (!isThinking) {
-                isThinking = true;
-                fullContent += '💭 **Berpikir...**\n\n';
-              }
-              // Don't show thinking content to user
+              // Just keep loading, don't show thinking text
             } else if (parsed.type === 'content') {
-              if (isThinking) {
-                isThinking = false;
-                fullContent += '\n\n';
+              if (isLoading) {
+                isLoading = false;
+                fullContent = ''; // Clear loading indicator
               }
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
             } else if (parsed.type === 'tool_call') {
-              const toolInfo = `\n\n🔧 Menggunakan ${parsed.function}...\n`;
-              fullContent += toolInfo;
-              updateMessageContent(messageId, fullContent);
+              // Collect URLs from webFetch calls
+              if (parsed.function === 'webFetch' && parsed.arguments?.url) {
+                if (!collectedUrls.includes(parsed.arguments.url)) {
+                  collectedUrls.push(parsed.arguments.url);
+                }
+              }
+              // Don't show tool call text, just keep loading
             } else if (parsed.type === 'error') {
               fullContent += `\n\n❌ Error: ${parsed.content}`;
               updateMessageContent(messageId, fullContent);
@@ -168,14 +183,22 @@ export const Chat = () => {
         }
       }
 
-      // Save final message
+      // Save final message with sources
+      if (collectedUrls.length > 0 && !fullContent.includes('**Sumber:**')) {
+        fullContent += '\n\n---\n📚 **Sumber:**\n';
+        collectedUrls.forEach((url, idx) => {
+          fullContent += `${idx + 1}. ${url}\n`;
+        });
+      }
       await saveMessage(chatId, fullContent, 'assistant');
+      setIsGenerating(false);
       
     } catch (error) {
       console.error('Error in search RAG:', error);
       const errorMsg = 'Maaf, terjadi kesalahan saat mencari informasi.';
       updateMessageContent(messageId, errorMsg);
       await saveMessage(chatId, errorMsg, 'assistant');
+      setIsGenerating(false);
     }
   };
 
@@ -218,7 +241,11 @@ export const Chat = () => {
       const decoder = new TextDecoder();
       let buffer = '';
       let fullContent = '';
-      let isThinking = false;
+      let isLoading = true;
+
+      // Show simple loading indicator
+      updateMessageContent(messageId, '⏳ Membaca konten website...');
+      setIsGenerating(true);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -235,9 +262,10 @@ export const Chat = () => {
           const data = line.slice(6);
           if (data === '[DONE]') {
             console.log('✅ Stream completed');
-            fullContent += `\n\n🌐 **Sumber:** ${url}`;
+            fullContent += `\n\n---\n🌐 **Sumber:** ${url}`;
             updateMessageContent(messageId, fullContent);
             await saveMessage(chatId, fullContent, 'assistant');
+            setIsGenerating(false);
             return;
           }
 
@@ -245,21 +273,16 @@ export const Chat = () => {
             const parsed = JSON.parse(data);
             
             if (parsed.type === 'thinking') {
-              if (!isThinking) {
-                isThinking = true;
-                fullContent += '💭 **Menganalisis...**\n\n';
-              }
+              // Just keep loading, don't show thinking text
             } else if (parsed.type === 'content') {
-              if (isThinking) {
-                isThinking = false;
-                fullContent += '\n\n';
+              if (isLoading) {
+                isLoading = false;
+                fullContent = ''; // Clear loading indicator
               }
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
             } else if (parsed.type === 'tool_call') {
-              const toolInfo = `\n\n🔧 Membaca konten dari ${parsed.arguments?.url || url}...\n`;
-              fullContent += toolInfo;
-              updateMessageContent(messageId, fullContent);
+              // Don't show tool call text, just keep loading
             } else if (parsed.type === 'error') {
               fullContent += `\n\n❌ Error: ${parsed.content}`;
               updateMessageContent(messageId, fullContent);
@@ -270,13 +293,18 @@ export const Chat = () => {
         }
       }
 
+      if (!fullContent.includes('**Sumber:**')) {
+        fullContent += `\n\n---\n🌐 **Sumber:** ${url}`;
+      }
       await saveMessage(chatId, fullContent, 'assistant');
+      setIsGenerating(false);
       
     } catch (error) {
       console.error('Error in web RAG:', error);
       const errorMsg = 'Maaf, terjadi kesalahan saat memproses konten web.';
       updateMessageContent(messageId, errorMsg);
       await saveMessage(chatId, errorMsg, 'assistant');
+      setIsGenerating(false);
     }
   };
 
@@ -370,11 +398,12 @@ export const Chat = () => {
           const aiMessageId = generateUniqueId();
           const aiMessage: HistoryMessage = {
             id: aiMessageId,
-            content: '🔍 Mencari informasi...',
+            content: '⏳ Mencari informasi...',
             role: 'assistant',
             timestamp: new Date()
           };
           addMessageToLocal(activeChatId, aiMessage);
+          setIsGenerating(true);
           setIsTyping(false);
           
           await handleSearchRAG(query, aiMessageId, activeChatId);
@@ -407,12 +436,13 @@ export const Chat = () => {
             const aiMessageId = generateUniqueId();
             const aiMessage: HistoryMessage = {
               id: aiMessageId,
-              content: '🌐 Membaca konten website...',
+              content: '⏳ Membaca konten website...',
               role: 'assistant',
               timestamp: new Date()
             };
             addMessageToLocal(activeChatId, aiMessage);
             setIsTyping(false);
+            setIsGenerating(true);
             
             await handleWebRAG(question, url, aiMessageId, activeChatId);
           } else {
