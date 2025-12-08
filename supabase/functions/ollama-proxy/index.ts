@@ -207,6 +207,8 @@ serve(async (req) => {
         // Tool execution loop
         let maxIterations = 5;
         let iteration = 0;
+        let collectedUrls: string[] = [];
+        let hasStreamedContent = false;
         
         // Create a TransformStream for streaming response
         const { readable, writable } = new TransformStream();
@@ -219,6 +221,10 @@ serve(async (req) => {
             while (iteration < maxIterations) {
               iteration++;
               console.log(`🔄 Tool calling iteration ${iteration}`);
+              console.log(`📤 Request iteration ${iteration}, tools enabled: ${iteration < 3}`);
+
+              // After 3 iterations, disable tools to force final response
+              const useTools = iteration < 3;
 
               const ollamaResponse = await fetch('https://ollama.com/api/chat', {
                 method: 'POST',
@@ -229,7 +235,7 @@ serve(async (req) => {
                 body: JSON.stringify({
                   model,
                   messages: conversationMessages,
-                  tools: [webSearchTool, webFetchTool],
+                  ...(useTools ? { tools: [webSearchTool, webFetchTool] } : {}),
                   stream: true,
                 })
               });
@@ -271,6 +277,7 @@ serve(async (req) => {
 
                       // Stream content if present
                       if (json.message.content) {
+                        hasStreamedContent = true;
                         accumulatedContent += json.message.content;
                         await writer.write(encoder.encode(`data: ${JSON.stringify({
                           type: 'content',
@@ -291,9 +298,19 @@ serve(async (req) => {
                   }
                 }
               }
+              
+              console.log(`Response headers:`, { contentType: 'application/json', status: 200, ok: true });
 
-              // If no tool calls, we're done
+              // If no tool calls or we've disabled tools, we're done
               if (!hasToolCalls) {
+                // Add sources if we have collected URLs
+                if (collectedUrls.length > 0) {
+                  const sourceText = '\n\n---\n📚 **Sumber:**\n' + collectedUrls.map((u, i) => `${i+1}. ${u}`).join('\n');
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({
+                    type: 'content',
+                    content: sourceText
+                  })}\n\n`));
+                }
                 await writer.write(encoder.encode(`data: [DONE]\n\n`));
                 break;
               }
@@ -378,6 +395,11 @@ serve(async (req) => {
                       console.error(`❌ webFetch failed:`, fetchError);
                       toolResult = { error: `Fetch failed: ${fetchError.message}` };
                     } else {
+                      // Collect URL for sources
+                      if (!collectedUrls.includes(args.url)) {
+                        collectedUrls.push(args.url);
+                      }
+                      
                       toolResult = {
                         url: args.url,
                         content: fetchData.content || '',
