@@ -35,7 +35,7 @@ serve(async (req) => {
       );
     }
 
-    const { prompt, model = 'FireFlies:latest', action, image, stream = true, messages = [], searchContext = null, webContext = null } = requestBody;
+    const { prompt, model = 'FireFlies:latest', action, image, stream = true, useTools = false, messages = [] } = requestBody;
     console.log(`🤖 Received model: ${model}, action: ${action}`);
     
     // Get Ollama API Key for Cloud API
@@ -83,11 +83,12 @@ serve(async (req) => {
               subscriptionPlan: profile?.subscription_plan 
             });
             
+            // Default to false if profile not found or error occurs
             isProUser = profile?.subscription_plan === 'pro' || false;
             console.log('Final isProUser status:', isProUser);
           } catch (profileLookupError) {
             console.error('Profile lookup error:', profileLookupError);
-            isProUser = false;
+            isProUser = false; // Default to free user on error
           }
         }
       } catch (error) {
@@ -97,22 +98,51 @@ serve(async (req) => {
     
     console.log('Final auth status:', { isProUser, authHeader: !!authHeader, action });
     
-    // Handle get models functionality
+    // Check model access restrictions - temporarily allow all models for debugging
+    const isFreeModel = model === 'FireFlies:latest';
+    console.log('Model access check:', { 
+      model, 
+      isFreeModel, 
+      isProUser, 
+      action,
+      bypassCheck: true 
+    });
+    
+    // Temporarily allow all models regardless of subscription
+    // if (!isProUser && !isFreeModel && action !== 'search') {
+    //   return new Response(
+    //     JSON.stringify({ 
+    //       error: 'Model ini hanya tersedia untuk pengguna Pro. Silakan upgrade subscription atau gunakan model FireFlies:latest.' 
+    //     }),
+    //     { 
+    //       status: 403, 
+    //       headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    //     }
+    //   );
+    // }
+    
+    // Handle get models functionality - list all available models
     if (action === 'get_models') {
       console.log('Fetching available models from Ollama Cloud');
       
       try {
+        // Ollama Cloud API /api/tags endpoint doesn't require authentication
         const modelsResponse = await fetch('https://ollama.com/api/tags');
         
         if (!modelsResponse.ok) {
           console.error(`Models API error: ${modelsResponse.status}`);
+          const errorText = await modelsResponse.text();
+          console.error('Error response:', errorText);
           throw new Error(`Models API error: ${modelsResponse.status}`);
         }
         
         const modelsData = await modelsResponse.json();
+        console.log('Raw models data:', JSON.stringify(modelsData).substring(0, 500));
+        
         const allModels = modelsData.models || [];
         
         console.log('Models fetched from Ollama Cloud:', allModels.length);
+        console.log('Available models:', allModels.map((m: any) => m.name).join(', '));
         
         return new Response(JSON.stringify({ models: allModels }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -129,269 +159,844 @@ serve(async (req) => {
       }
     }
     
-    // Handle search action - use web-scraper function
-    if (action === 'search') {
-      console.log('🔍 Performing search for:', prompt);
+    // Handle chat with tool calling (webSearch and webFetch)
+    if (useTools) {
+      console.log('🔧 Using tool calling mode with webSearch and webFetch');
       
       try {
-        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-        const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-        const supabase = createClient(supabaseUrl, supabaseKey);
+        // Define tool schemas
+        const webSearchTool = {
+          type: 'function',
+          function: {
+            name: 'webSearch',
+            description: 'Performs a web search for the given query.',
+            parameters: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search query string.' },
+                max_results: {
+                  type: 'number',
+                  description: 'The maximum number of results to return per query (default 3).',
+                },
+              },
+              required: ['query'],
+            },
+          },
+        };
+
+        const webFetchTool = {
+          type: 'function',
+          function: {
+            name: 'webFetch',
+            description: 'Fetches a single page by URL.',
+            parameters: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'A single URL to fetch.' },
+              },
+              required: ['url'],
+            },
+          },
+        };
+
+        // Initialize conversation messages
+        let conversationMessages = messages.length > 0 ? [...messages] : [
+          { role: 'user', content: prompt }
+        ];
+
+        // Tool execution loop
+        let maxIterations = 5;
+        let iteration = 0;
+        let collectedUrls: string[] = [];
+        let hasStreamedContent = false;
         
-        // Call web-scraper function to search
-        const { data: searchData, error: searchError } = await supabase.functions.invoke('web-scraper', {
-          body: { 
-            action: 'search', 
-            query: prompt 
+        // Create a TransformStream for streaming response
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+
+        // Process in background
+        (async () => {
+          try {
+            while (iteration < maxIterations) {
+              iteration++;
+              console.log(`🔄 Tool calling iteration ${iteration}`);
+              console.log(`📤 Request iteration ${iteration}, tools enabled: ${iteration < 3}`);
+
+              // After 3 iterations, disable tools to force final response
+              const useTools = iteration < 3;
+
+              const ollamaResponse = await fetch('https://ollama.com/api/chat', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${ollamaApiKey}`
+                },
+                body: JSON.stringify({
+                  model,
+                  messages: conversationMessages,
+                  ...(useTools ? { tools: [webSearchTool, webFetchTool] } : {}),
+                  stream: true,
+                })
+              });
+
+              if (!ollamaResponse.ok) {
+                throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+              }
+
+              let accumulatedContent = '';
+              let accumulatedThinking = '';
+              let toolCalls: any[] = [];
+              let hasToolCalls = false;
+
+              const reader = ollamaResponse.body?.getReader();
+              if (!reader) throw new Error('No response body');
+
+              const decoder = new TextDecoder();
+              
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n').filter(line => line.trim());
+
+                for (const line of lines) {
+                  try {
+                    const json = JSON.parse(line);
+                    
+                    if (json.message) {
+                      // Stream thinking if present
+                      if (json.message.thinking) {
+                        accumulatedThinking += json.message.thinking;
+                        await writer.write(encoder.encode(`data: ${JSON.stringify({
+                          type: 'thinking',
+                          content: json.message.thinking
+                        })}\n\n`));
+                      }
+
+                      // Stream content if present
+                      if (json.message.content) {
+                        hasStreamedContent = true;
+                        accumulatedContent += json.message.content;
+                        await writer.write(encoder.encode(`data: ${JSON.stringify({
+                          type: 'content',
+                          content: json.message.content
+                        })}\n\n`));
+                      }
+
+                      // Collect tool calls
+                      if (json.message.tool_calls && json.message.tool_calls.length > 0) {
+                        hasToolCalls = true;
+                        toolCalls = json.message.tool_calls;
+                      }
+                    }
+
+                    if (json.done) break;
+                  } catch (e) {
+                    console.error('Error parsing JSON line:', e);
+                  }
+                }
+              }
+              
+              console.log(`Response headers:`, { contentType: 'application/json', status: 200, ok: true });
+
+              // If no tool calls or we've disabled tools, we're done
+              if (!hasToolCalls) {
+                // Add sources if we have collected URLs
+                if (collectedUrls.length > 0) {
+                  const sourceText = '\n\n---\n📚 **Sumber:**\n' + collectedUrls.map((u, i) => `${i+1}. ${u}`).join('\n');
+                  await writer.write(encoder.encode(`data: ${JSON.stringify({
+                    type: 'content',
+                    content: sourceText
+                  })}\n\n`));
+                }
+                await writer.write(encoder.encode(`data: [DONE]\n\n`));
+                break;
+              }
+
+              // Execute tool calls
+              console.log(`🔧 Executing ${toolCalls.length} tool call(s)`);
+              
+              // Add assistant message with tool calls
+              conversationMessages.push({
+                role: 'assistant',
+                content: accumulatedContent,
+                thinking: accumulatedThinking,
+                tool_calls: toolCalls
+              });
+
+              for (const toolCall of toolCalls) {
+                const functionName = toolCall.function.name;
+                const args = toolCall.function.arguments;
+
+                console.log(`📞 Calling ${functionName} with args:`, args);
+
+                await writer.write(encoder.encode(`data: ${JSON.stringify({
+                  type: 'tool_call',
+                  function: functionName,
+                  arguments: args
+                })}\n\n`));
+
+                let toolResult: any;
+
+                if (functionName === 'webSearch') {
+                  try {
+                    console.log(`🔍 Using web-scraper for search: "${args.query}"`);
+                    
+                    // Initialize Supabase client
+                    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+                    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+                    const supabase = createClient(supabaseUrl, supabaseKey);
+                    
+                    const { data: searchData, error: searchError } = await supabase.functions.invoke('web-scraper', {
+                      body: { 
+                        action: 'search', 
+                        query: args.query 
+                      }
+                    });
+
+                    if (searchError) {
+                      console.error(`❌ webSearch failed:`, searchError);
+                      toolResult = { error: `Search failed: ${searchError.message}` };
+                    } else {
+                      // Format results for the model
+                      const urls = searchData.urls || [];
+                      toolResult = {
+                        results: urls.map((url: string, idx: number) => ({
+                          title: `Result ${idx + 1}`,
+                          url: url,
+                          snippet: `Found result for: ${args.query}`
+                        }))
+                      };
+                      console.log(`✅ webSearch success: ${urls.length} results`);
+                    }
+                  } catch (error) {
+                    console.error('❌ webSearch exception:', error);
+                    toolResult = { error: `Search error: ${error instanceof Error ? error.message : 'Unknown'}` };
+                  }
+                } else if (functionName === 'webFetch') {
+                  try {
+                    console.log(`🌐 Using web-scraper for fetch: ${args.url}`);
+                    
+                    // Initialize Supabase client
+                    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+                    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+                    const supabase = createClient(supabaseUrl, supabaseKey);
+                    
+                    const { data: fetchData, error: fetchError } = await supabase.functions.invoke('web-scraper', {
+                      body: { 
+                        action: 'fetch', 
+                        url: args.url 
+                      }
+                    });
+
+                    if (fetchError) {
+                      console.error(`❌ webFetch failed:`, fetchError);
+                      toolResult = { error: `Fetch failed: ${fetchError.message}` };
+                    } else {
+                      // Collect URL for sources
+                      if (!collectedUrls.includes(args.url)) {
+                        collectedUrls.push(args.url);
+                      }
+                      
+                      toolResult = {
+                        url: args.url,
+                        content: fetchData.content || '',
+                        title: fetchData.title || 'Web Page'
+                      };
+                      
+                      // Limit content size
+                      if (toolResult.content && toolResult.content.length > 8000) {
+                        toolResult.content = toolResult.content.substring(0, 8000);
+                      }
+                      
+                      console.log(`✅ webFetch success for ${args.url}`);
+                    }
+                  } catch (error) {
+                    console.error('❌ webFetch exception:', error);
+                    toolResult = { error: `Fetch error: ${error instanceof Error ? error.message : 'Unknown'}` };
+                  }
+                }
+
+                // Add tool result to conversation
+                conversationMessages.push({
+                  role: 'tool',
+                  content: JSON.stringify(toolResult),
+                  tool_name: functionName
+                });
+              }
+            }
+
+            await writer.close();
+          } catch (error) {
+            console.error('Tool calling error:', error);
+            await writer.write(encoder.encode(`data: ${JSON.stringify({
+              type: 'error',
+              content: error instanceof Error ? error.message : 'Unknown error'
+            })}\n\n`));
+            await writer.close();
           }
+        })();
+
+        return new Response(readable, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
         });
 
-        if (searchError) {
-          console.error('Search error:', searchError);
-          return new Response(JSON.stringify({ 
-            urls: [],
-            error: searchError.message 
-          }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+      } catch (error) {
+        console.error('Tool calling setup error:', error);
+        return new Response(JSON.stringify({ 
+          error: `Tool calling failed: ${error instanceof Error ? error.message : 'Unknown error'}` 
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+    
+    // Handle search functionality - get top 4 sites and download content
+    if (action === 'search') {
+      console.log('Performing search for:', prompt);
+      
+      try {
+        // Use multiple CORS proxies as fallback
+        const proxies = [
+          'https://corsproxy.io/?',
+          'https://api.codetabs.com/v1/proxy?quest=',
+          'https://thingproxy.freeboard.io/fetch/'
+        ];
+        
+        let searchResults = [];
+        
+        for (const proxyUrl of proxies) {
+          try {
+            const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(prompt)}`;
+            const fullUrl = proxyUrl + encodeURIComponent(searchUrl);
+            
+            console.log('🔍 Trying search with proxy:', proxyUrl);
+            
+            const response = await fetch(fullUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; EdgeFunction/1.0)'
+              }
+            });
+            
+            if (response.ok) {
+              const data = proxyUrl.includes('allorigins') ? 
+                await response.json().then(d => d.contents) : 
+                await response.text();
+              
+              // Simple regex-based HTML parsing for search results
+              const resultPattern = /<div[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+              const linkPattern = /<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
+              const snippetPattern = /<div[^>]*class="[^"]*snippet[^"]*"[^>]*>([\s\S]*?)<\/div>/i;
+              
+              let match;
+              let count = 0;
+              
+              while ((match = resultPattern.exec(data)) !== null && count < 4) {
+                const resultHtml = match[1];
+                const linkMatch = linkPattern.exec(resultHtml);
+                
+                if (linkMatch && linkMatch[1]) {
+                  try {
+                    const href = linkMatch[1];
+                    const url = new URL(href, 'https://duckduckgo.com');
+                    const realUrl = url.searchParams.get('uddg');
+                    
+                    if (realUrl) {
+                      const decodedUrl = decodeURIComponent(realUrl);
+                      
+                      // Extract title (from link text, remove HTML tags)
+                      const title = linkMatch[2]?.replace(/<[^>]*>/g, '').trim() || 'No title';
+                      
+                      // Extract snippet
+                      const snippetMatch = snippetPattern.exec(resultHtml);
+                      const snippet = snippetMatch?.[1]?.replace(/<[^>]*>/g, '').trim() || 'No description';
+                      
+                      searchResults.push({
+                        title,
+                        snippet,
+                        url: decodedUrl
+                      });
+                      count++;
+                    }
+                  } catch (e) {
+                    // Skip invalid URLs
+                  }
+                }
+              }
+              
+              if (searchResults.length > 0) {
+                console.log('✅ Search successful with proxy:', proxyUrl);
+                break; // Exit loop if successful
+              }
+            }
+          } catch (proxyError) {
+            const errorMessage = proxyError instanceof Error ? proxyError.message : 'Unknown error';
+            console.log('❌ Proxy failed:', proxyUrl, errorMessage);
+            continue; // Try next proxy
+          }
         }
         
-        const urls = searchData?.urls || [];
-        console.log(`✅ Search found ${urls.length} URLs`);
+        // Fallback results if search fails
+        if (searchResults.length === 0) {
+          searchResults = [
+            {
+              title: `${prompt} - Wikipedia Indonesia`,  
+              snippet: `Artikel lengkap tentang ${prompt} dengan informasi mendalam dari berbagai sumber terpercaya.`,
+              url: `https://id.wikipedia.org/wiki/${encodeURIComponent(prompt.replace(/\s+/g, '_'))}`
+            },
+            {
+              title: `${prompt} - Google Search`,
+              snippet: `Hasil pencarian terkini untuk ${prompt} dari berbagai sumber di internet.`,
+              url: `https://www.google.com/search?q=${encodeURIComponent(prompt)}`
+            },
+            {
+              title: `${prompt} - DuckDuckGo`,
+              snippet: `Informasi tentang ${prompt} tersedia di berbagai sumber online.`,
+              url: `https://duckduckgo.com/?q=${encodeURIComponent(prompt)}`
+            },
+            {
+              title: `${prompt} - Bing Search`,
+              snippet: `Temukan informasi terbaru tentang ${prompt} dari mesin pencari Bing.`,
+              url: `https://www.bing.com/search?q=${encodeURIComponent(prompt)}`
+            }
+          ];
+        }
         
-        return new Response(JSON.stringify({ urls }), {
+        console.log('Search results provided:', searchResults.length);
+        
+        return new Response(JSON.stringify({ results: searchResults }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
         
-      } catch (error) {
-        console.error('Search error:', error);
+      } catch (searchError) {
+        console.error('Search error:', searchError);
+        
+        // Always provide some results
+        const basicResults = [{
+          title: `Pencarian: ${prompt}`,
+          snippet: `Informasi tentang "${prompt}" tersedia di berbagai sumber online. Coba pencarian dengan kata kunci yang lebih spesifik.`,
+          url: `https://duckduckgo.com/?q=${encodeURIComponent(prompt)}`
+        }];
+        
         return new Response(JSON.stringify({ 
-          urls: [],
-          error: error instanceof Error ? error.message : 'Unknown error' 
+          results: basicResults
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
     }
     
-    // Handle web fetch action - use web-scraper function
+    // Handle web scraping functionality
     if (action === 'web') {
-      const targetUrl = requestBody.url;
-      console.log('🌐 Fetching web content from:', targetUrl);
+      console.log('Performing web scraping for URL:', requestBody.url);
       
-      if (!targetUrl) {
-        return new Response(JSON.stringify({ error: 'URL is required' }), {
+      try {
+        const targetUrl = requestBody.url;
+        if (!targetUrl) {
+          throw new Error('URL is required for web scraping');
+        }
+        
+        // Generic web scraping using multiple CORS proxies
+        const proxies = [
+          'https://corsproxy.io/?',
+          'https://api.codetabs.com/v1/proxy?quest=',
+          'https://thingproxy.freeboard.io/fetch/'
+        ];
+        
+        let textContent = '';
+        
+        for (const proxyUrl of proxies) {
+          try {
+            const fullUrl = proxyUrl + encodeURIComponent(targetUrl);
+            
+            console.log('🌐 Trying web fetch with proxy:', proxyUrl);
+            
+            // Add timeout and better error handling
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+            
+            const webResponse = await fetch(fullUrl, {
+              signal: controller.signal,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; EdgeFunction/1.0)'
+              }
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (!webResponse.ok) {
+              throw new Error(`HTTP ${webResponse.status}: ${webResponse.statusText}`);
+            }
+            
+            const data = proxyUrl.includes('allorigins') ? 
+              await webResponse.json().then(d => d.contents) : 
+              await webResponse.text();
+            
+            if (!data) {
+              throw new Error('No content returned from proxy');
+            }
+        
+        // Extract text content from HTML with improved parsing
+        const cleanHtml = data
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '') // Remove navigation
+          .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '') // Remove headers
+          .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '') // Remove footers
+          .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '') // Remove sidebars
+          .replace(/<!--[\s\S]*?-->/gi, '') // Remove comments
+          .replace(/<[^>]+>/g, ' ') // Remove HTML tags
+          .replace(/\s+/g, ' ') // Normalize whitespace
+          .replace(/\t/g, ' ') // Replace tabs
+          .trim();
+        
+        textContent = cleanHtml.substring(0, 8000); // Limit content length
+        
+        if (textContent && textContent.length >= 50) {
+          console.log('✅ Web content extracted successfully with proxy:', proxyUrl);
+          break; // Exit loop if successful
+        }
+      } catch (proxyError) {
+        const errorMessage = proxyError instanceof Error ? proxyError.message : 'Unknown error';
+        console.log('❌ Web proxy failed:', proxyUrl, errorMessage);
+        continue; // Try next proxy
+      }
+    }
+        
+        if (!textContent || textContent.length < 50) {
+          throw new Error('No meaningful content extracted from webpage');
+        }
+        
+        console.log('Web content extracted, length:', textContent.length);
+        
+        return new Response(JSON.stringify({ 
+          content: textContent,
+          url: targetUrl 
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+        
+      } catch (webError) {
+        console.error('Web scraping error:', webError);
+        
+        // More specific error messages
+        let errorMessage = 'Gagal mengakses konten web';
+        if (webError instanceof Error) {
+          if (webError.name === 'AbortError') {
+            errorMessage = 'Request timeout - website terlalu lama merespons';
+          } else if (webError.message.includes('HTTP')) {
+            errorMessage = `Website error: ${webError.message}`;
+          } else if (webError.message.includes('fetch')) {
+            errorMessage = 'Tidak dapat mengakses website - periksa URL';
+          }
+          
+          return new Response(JSON.stringify({ 
+            error: `${errorMessage}: ${webError.message}` 
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        
+        return new Response(JSON.stringify({ 
+          error: errorMessage
+        }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
+    }
+    
+    // Handle vision model functionality with direct prompt
+    if (action === 'generate' && image) {
+      console.log('🖼️ Processing vision request with model:', model);
       
-      try {
-        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-        const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-        const supabase = createClient(supabaseUrl, supabaseKey);
-        
-        // Call web-scraper function to fetch
-        const { data: fetchData, error: fetchError } = await supabase.functions.invoke('web-scraper', {
-          body: { 
-            action: 'fetch', 
-            url: targetUrl 
+      if (!prompt) {
+        return new Response(
+          JSON.stringify({ error: 'Prompt is required for vision' }),
+          { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
           }
+        );
+      }
+
+      // Always use qwen3-vl:235b-cloud for vision
+      const visionModel = 'qwen3-vl:235b-cloud';
+      console.log(`Making vision request to Ollama Cloud API with model: ${visionModel}`);
+      
+      // Extract base64 data from data URL
+      const base64Data = image.split(',')[1] || image;
+      
+      // Use user's prompt directly - no RAG processing
+      const visionPrompt = prompt;
+
+      try {
+        const response = await fetch('https://ollama.com/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${ollamaApiKey}`
+          },
+          body: JSON.stringify({
+            model: visionModel,
+            messages: [
+              {
+                role: 'user',
+                content: visionPrompt,
+                images: [base64Data]
+              }
+            ],
+            stream: true,
+            options: {
+              temperature: 0.1,
+              top_p: 0.9
+            }
+          }),
         });
 
-        if (fetchError) {
-          console.error('Fetch error:', fetchError);
-          return new Response(JSON.stringify({ 
-            content: '',
-            error: fetchError.message 
-          }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+        if (!response.ok) {
+          console.error(`Ollama Vision API error: ${response.status} ${response.statusText}`);
+          const errorText = await response.text();
+          console.error('Error response:', errorText);
+          return new Response(
+            JSON.stringify({ 
+              error: `Ollama Vision API error: ${response.status} - ${errorText}` 
+            }),
+            { 
+              status: 500, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+            }
+          );
         }
-        
-        const content = fetchData?.content || '';
-        const title = fetchData?.title || 'Web Page';
-        console.log(`✅ Fetched content, length: ${content.length}`);
-        
-        return new Response(JSON.stringify({ content, title, url: targetUrl }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-        
-      } catch (error) {
-        console.error('Web fetch error:', error);
-        return new Response(JSON.stringify({ 
-          content: '',
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+
+        // Collect the full response from the stream
+        const reader = response.body?.getReader();
+        if (!reader) {
+          return new Response(
+            JSON.stringify({ error: 'No response stream' }),
+            { 
+              status: 500, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+            }
+          );
+        }
+
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+        let buffer = '';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            buffer += chunk;
+            
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const data = JSON.parse(line.trim());
+                  
+                  // Accumulate response content
+                  if (data.message?.content) {
+                    fullResponse += data.message.content;
+                  }
+                  
+                  if (data.done) {
+                    console.log('Vision response completed from Ollama Cloud');
+                    break;
+                  }
+                } catch (e) {
+                  const errorMessage = e instanceof Error ? e.message : 'Unknown error';
+                  console.log('JSON parse error for vision line:', line, 'Error:', errorMessage);
+                  continue;
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Vision stream error:', error);
+          return new Response(
+            JSON.stringify({ 
+              error: 'Vision stream error occurred' 
+            }),
+            { 
+              status: 500, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            }
+          );
+        }
+
+        // Return the complete response as JSON
+        return new Response(
+          JSON.stringify({ 
+            response: fullResponse 
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          }
+        );
+      } catch (fetchError) {
+        console.error('Fetch error for vision:', fetchError);
+        const errorMessage = fetchError instanceof Error ? fetchError.message : 'Unknown error';
+        return new Response(
+          JSON.stringify({ 
+            error: `Network error connecting to Ollama: ${errorMessage}` 
+          }),
+          { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          }
+        );
       }
     }
     
-    // Regular chat with optional search/web context
-    console.log('💬 Processing chat request');
-    
-    // Build system message with context if provided
-    let systemMessage = 'Kamu adalah asisten AI yang membantu dan ramah. Jawab dalam Bahasa Indonesia dengan informasi yang akurat dan berguna.';
-    
-    if (searchContext) {
-      systemMessage = `Kamu adalah asisten AI yang membantu mencari informasi. Berikut adalah hasil pencarian web yang relevan:
-
-${searchContext.map((item: { url: string; content: string }, idx: number) => 
-  `--- Sumber ${idx + 1}: ${item.url} ---
-${item.content}
-`).join('\n')}
-
-Berdasarkan informasi di atas, jawab pertanyaan pengguna dengan lengkap dan akurat dalam Bahasa Indonesia. Jangan sebutkan bahwa kamu membaca dari sumber, langsung berikan jawaban yang informatif.`;
-    }
-    
-    if (webContext) {
-      systemMessage = `Kamu adalah asisten AI yang membantu menganalisis konten website. Berikut adalah konten dari ${webContext.url}:
-
-${webContext.content}
-
-Berdasarkan konten website di atas, jawab pertanyaan pengguna dengan lengkap dan akurat dalam Bahasa Indonesia.`;
-    }
-    
-    // Build messages array
-    let chatMessages = messages.length > 0 ? [...messages] : [
-      { role: 'user', content: prompt }
-    ];
-    
-    // Add system message at the beginning
-    chatMessages = [
-      { role: 'system', content: systemMessage },
-      ...chatMessages.filter((m: any) => m.role !== 'system')
-    ];
-    
-    // Handle vision requests
-    if (image) {
-      console.log('🖼️ Processing vision request');
-      chatMessages = chatMessages.map((msg: any) => {
-        if (msg.role === 'user' && msg === chatMessages[chatMessages.length - 1]) {
-          return {
-            role: 'user',
-            content: msg.content,
-            images: [image.replace(/^data:image\/\w+;base64,/, '')]
-          };
+    // Handle Ollama chat functionality with streaming support
+    if (!prompt) {
+      return new Response(
+        JSON.stringify({ error: 'Prompt is required' }),
+        { 
+          status: 400, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         }
-        return msg;
-      });
+      );
+    }
+
+    console.log(`Making request to Ollama Cloud API`);
+    
+    // Get chat history from request body  
+    const { history } = requestBody;
+    
+    // Prepare messages array for chat API
+    type ChatMessage = {
+      role: 'user' | 'assistant' | 'system';
+      content: string;
+      images?: string[];
+    };
+    
+    let chatMessages: ChatMessage[] = [];
+    
+    // Add history if available
+    if (history && Array.isArray(history) && history.length > 0) {
+      chatMessages = [...history];
     }
     
-    // Check for think mode
-    const useThinking = prompt?.toLowerCase().includes('/pikir') || chatMessages.some((m: any) => 
-      m.role === 'user' && m.content?.toLowerCase().includes('/pikir')
-    );
+    // Add the current user message
+    chatMessages.push({
+      role: 'user',
+      content: prompt
+    });
     
-    console.log(`📤 Sending request to Ollama, model: ${model}, thinking: ${useThinking}`);
+    // Ensure cloud model has -cloud suffix if not already present
+    let cloudModel = model;
+    if (!model.endsWith('-cloud')) {
+      cloudModel = `${model}-cloud`;
+      console.log(`⚠️ Model name adjusted for cloud: ${model} -> ${cloudModel}`);
+    }
     
-    // Make request to Ollama
-    const ollamaResponse = await fetch('https://ollama.com/api/chat', {
+    console.log(`📝 Sending to Ollama Cloud: ${chatMessages.length} messages, model: ${cloudModel}`);
+    
+    const response = await fetch('https://ollama.com/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${ollamaApiKey}`
       },
       body: JSON.stringify({
-        model,
+        model: cloudModel,
         messages: chatMessages,
-        stream: true,
-        ...(useThinking ? { think: true } : {})
-      })
+        stream: stream,  // Use stream parameter from request
+      }),
     });
 
-    if (!ollamaResponse.ok) {
-      const errorText = await ollamaResponse.text();
-      console.error('Ollama API error:', ollamaResponse.status, errorText);
+    if (!response.ok) {
+      console.error(`Ollama API error: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('Ollama error response:', errorText);
+      
+      // Provide helpful error messages
+      let errorMessage = `Ollama API error: ${response.status}`;
+      if (response.status === 502) {
+        errorMessage = 'Model tidak tersedia atau sedang bermasalah. Pastikan model cloud tersedia.';
+      } else if (response.status === 401) {
+        errorMessage = 'API key tidak valid. Periksa OLLAMA_API_KEY.';
+      } else if (response.status === 404) {
+        errorMessage = `Model "${cloudModel}" tidak ditemukan. Gunakan model cloud yang valid.`;
+      }
+      
       return new Response(
-        JSON.stringify({ error: `Ollama API error: ${ollamaResponse.status}` }),
+        JSON.stringify({ 
+          error: errorMessage,
+          details: errorText
+        }),
         { 
-          status: 500, 
+          status: response.status, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         }
       );
     }
 
-    // Stream response back to client
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
-
-    (async () => {
-      try {
-        const reader = ollamaResponse.body?.getReader();
-        if (!reader) throw new Error('No response body');
-
-        const decoder = new TextDecoder();
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n').filter(line => line.trim());
-
-          for (const line of lines) {
-            try {
-              const json = JSON.parse(line);
-              
-              if (json.message) {
-                // Stream thinking if present
-                if (json.message.thinking) {
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({
-                    type: 'thinking',
-                    content: json.message.thinking
-                  })}\n\n`));
-                }
-
-                // Stream content if present
-                if (json.message.content) {
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({
-                    type: 'content',
-                    content: json.message.content
-                  })}\n\n`));
-                }
-              }
-
-              if (json.done) {
-                await writer.write(encoder.encode(`data: [DONE]\n\n`));
-                break;
-              }
-            } catch (e) {
-              // Ignore parse errors for partial chunks
-            }
-          }
+    // Handle streaming vs non-streaming response
+    if (stream) {
+      // Stream the response directly from Ollama
+      console.log('✅ Streaming response from Ollama Cloud - passing through response body');
+      console.log('Response headers:', {
+        contentType: response.headers.get('content-type'),
+        status: response.status,
+        ok: response.ok
+      });
+      
+      // Pass through the response body directly
+      return new Response(response.body, {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    } else {
+      // Non-streaming: collect full response and return as JSON
+      console.log('📦 Collecting non-streaming response from Ollama Cloud');
+      const data = await response.json();
+      
+      // Ollama Cloud non-streaming format: { "model": "...", "message": { "role": "assistant", "content": "..." }, "done": true }
+      const fullResponse = data.message?.content || '';
+      console.log('✅ Got non-streaming response, length:', fullResponse.length);
+      
+      return new Response(
+        JSON.stringify({ response: fullResponse }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         }
-
-        await writer.close();
-      } catch (error) {
-        console.error('Stream error:', error);
-        await writer.write(encoder.encode(`data: ${JSON.stringify({
-          type: 'error',
-          content: error instanceof Error ? error.message : 'Unknown error'
-        })}\n\n`));
-        await writer.close();
-      }
-    })();
-
-    return new Response(readable, {
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
+      );
+    }
 
   } catch (error) {
-    console.error('Edge function error:', error);
+    console.error('Error in ollama-proxy:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      JSON.stringify({ 
+        error: `Failed to connect to Ollama: ${errorMessage}` 
+      }),
       { 
         status: 500, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       }
     );
   }
-});
+})

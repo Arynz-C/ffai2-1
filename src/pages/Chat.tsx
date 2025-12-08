@@ -9,6 +9,7 @@ import { Menu, LogOut, CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { searchAndFetchContent, getWebpageContent } from "@/utils/ragUtils";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { useSelectedModel } from "@/contexts/ModelContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -46,6 +47,7 @@ export const Chat = () => {
   // Prevent streaming from pausing when tab becomes hidden
   useEffect(() => {
     const handleVisibilityChange = () => {
+      // Override the default behavior that pauses requests when tab is hidden
       if (document.hidden) {
         console.log('Tab hidden - keeping streams active');
       } else {
@@ -53,6 +55,7 @@ export const Chat = () => {
       }
     };
 
+    // Prevent automatic throttling of background tabs
     const preventThrottling = () => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -76,89 +79,14 @@ export const Chat = () => {
   // Get current messages from chat history
   const messages = getCurrentChatMessages();
 
-  // Search RAG - Direct approach without tool calling
+  // Search RAG using Ollama native tool calling
   const handleSearchRAG = async (query: string, messageId: string, chatId: string) => {
     try {
-      console.log('🔍 Starting search for:', query);
+      console.log('🔍 Starting Ollama native tool search for:', query);
       
       const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
       const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       
-      updateMessageContent(messageId, '⏳ Mencari informasi...');
-      setIsGenerating(true);
-
-      // Step 1: Search for URLs
-      console.log('📋 Step 1: Searching for URLs...');
-      const searchResponse = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-        },
-        body: JSON.stringify({
-          prompt: query,
-          action: 'search'
-        }),
-      });
-
-      if (!searchResponse.ok) {
-        throw new Error('Search failed');
-      }
-
-      const searchData = await searchResponse.json();
-      const urls = searchData.urls || [];
-      
-      if (urls.length === 0) {
-        const noResultMsg = 'Maaf, tidak ditemukan hasil pencarian untuk query tersebut.';
-        updateMessageContent(messageId, noResultMsg);
-        await saveMessage(chatId, noResultMsg, 'assistant');
-        setIsGenerating(false);
-        return;
-      }
-
-      console.log(`📋 Found ${urls.length} URLs:`, urls);
-      updateMessageContent(messageId, `⏳ Membaca ${urls.length} sumber...`);
-
-      // Step 2: Fetch content from each URL
-      const fetchPromises = urls.slice(0, 3).map(async (url: string) => {
-        try {
-          const fetchResponse = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${SUPABASE_KEY}`,
-            },
-            body: JSON.stringify({
-              action: 'web',
-              url: url
-            }),
-          });
-
-          if (fetchResponse.ok) {
-            const data = await fetchResponse.json();
-            return { url, content: data.content || '' };
-          }
-          return { url, content: '' };
-        } catch {
-          return { url, content: '' };
-        }
-      });
-
-      const fetchedContents = await Promise.all(fetchPromises);
-      const validContents = fetchedContents.filter(c => c.content.length > 100);
-
-      if (validContents.length === 0) {
-        const noContentMsg = 'Maaf, tidak dapat membaca konten dari sumber yang ditemukan.';
-        updateMessageContent(messageId, noContentMsg);
-        await saveMessage(chatId, noContentMsg, 'assistant');
-        setIsGenerating(false);
-        return;
-      }
-
-      console.log(`📋 Step 2: Fetched content from ${validContents.length} sources`);
-      updateMessageContent(messageId, '⏳ Menganalisis informasi...');
-
-      // Step 3: Send to AI with context
       const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
         method: 'POST',
         headers: {
@@ -168,22 +96,34 @@ export const Chat = () => {
         body: JSON.stringify({
           prompt: query,
           model: selectedModel,
-          searchContext: validContents,
+          useTools: true,
           messages: [
-            { role: 'user', content: query }
+            {
+              role: 'system',
+              content: 'Kamu adalah asisten AI yang membantu mencari informasi di internet. Gunakan tool webSearch untuk mencari informasi yang relevan, kemudian gunakan webFetch untuk membaca konten website. Jawab dalam Bahasa Indonesia dengan informasi yang akurat.'
+            },
+            {
+              role: 'user',
+              content: query
+            }
           ]
         }),
       });
 
       if (!response.ok || !response.body) {
-        throw new Error('Failed to get AI response');
+        throw new Error('Failed to start stream');
       }
 
-      // Stream the response
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let fullContent = '';
+      let isLoading = true;
+      let collectedUrls: string[] = [];
+
+      // Show simple loading indicator
+      updateMessageContent(messageId, '⏳ Mencari informasi...');
+      setIsGenerating(true);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -199,11 +139,14 @@ export const Chat = () => {
 
           const data = line.slice(6);
           if (data === '[DONE]') {
-            // Add sources at the end
-            fullContent += '\n\n---\n📚 **Sumber:**\n';
-            validContents.forEach((item, idx) => {
-              fullContent += `${idx + 1}. ${item.url}\n`;
-            });
+            console.log('✅ Stream completed');
+            // Add source URLs at the end
+            if (collectedUrls.length > 0) {
+              fullContent += '\n\n---\n📚 **Sumber:**\n';
+              collectedUrls.forEach((url, idx) => {
+                fullContent += `${idx + 1}. ${url}\n`;
+              });
+            }
             updateMessageContent(messageId, fullContent);
             await saveMessage(chatId, fullContent, 'assistant');
             setIsGenerating(false);
@@ -212,24 +155,41 @@ export const Chat = () => {
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.type === 'content') {
+            
+            if (parsed.type === 'thinking') {
+              // Just keep loading, don't show thinking text
+            } else if (parsed.type === 'content') {
+              if (isLoading) {
+                isLoading = false;
+                fullContent = ''; // Clear loading indicator
+              }
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'tool_call') {
+              // Collect URLs from webFetch calls
+              if (parsed.function === 'webFetch' && parsed.arguments?.url) {
+                if (!collectedUrls.includes(parsed.arguments.url)) {
+                  collectedUrls.push(parsed.arguments.url);
+                }
+              }
+              // Don't show tool call text, just keep loading
+            } else if (parsed.type === 'error') {
+              fullContent += `\n\n❌ Error: ${parsed.content}`;
+              updateMessageContent(messageId, fullContent);
             }
-          } catch {
-            // Ignore parse errors
+          } catch (e) {
+            console.error('Error parsing SSE:', e);
           }
         }
       }
 
-      // Final save
-      if (fullContent && !fullContent.includes('**Sumber:**')) {
+      // Save final message with sources
+      if (collectedUrls.length > 0 && !fullContent.includes('**Sumber:**')) {
         fullContent += '\n\n---\n📚 **Sumber:**\n';
-        validContents.forEach((item, idx) => {
-          fullContent += `${idx + 1}. ${item.url}\n`;
+        collectedUrls.forEach((url, idx) => {
+          fullContent += `${idx + 1}. ${url}\n`;
         });
       }
-      updateMessageContent(messageId, fullContent);
       await saveMessage(chatId, fullContent, 'assistant');
       setIsGenerating(false);
       
@@ -242,49 +202,14 @@ export const Chat = () => {
     }
   };
 
-  // Web RAG - Direct approach without tool calling
+  // Web RAG using Ollama native tool calling
   const handleWebRAG = async (query: string, url: string, messageId: string, chatId: string) => {
     try {
-      console.log('🌐 Starting web fetch for:', url);
+      console.log('🌐 Starting Ollama native web fetch for:', url);
       
       const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
       const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
       
-      updateMessageContent(messageId, '⏳ Membaca konten website...');
-      setIsGenerating(true);
-
-      // Step 1: Fetch web content
-      const fetchResponse = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-        },
-        body: JSON.stringify({
-          action: 'web',
-          url: url
-        }),
-      });
-
-      if (!fetchResponse.ok) {
-        throw new Error('Failed to fetch web content');
-      }
-
-      const fetchData = await fetchResponse.json();
-      const content = fetchData.content || '';
-
-      if (content.length < 100) {
-        const noContentMsg = 'Maaf, tidak dapat membaca konten dari URL tersebut.';
-        updateMessageContent(messageId, noContentMsg);
-        await saveMessage(chatId, noContentMsg, 'assistant');
-        setIsGenerating(false);
-        return;
-      }
-
-      console.log(`📋 Fetched content, length: ${content.length}`);
-      updateMessageContent(messageId, '⏳ Menganalisis konten...');
-
-      // Step 2: Send to AI with context
       const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
         method: 'POST',
         headers: {
@@ -292,24 +217,35 @@ export const Chat = () => {
           'Authorization': `Bearer ${SUPABASE_KEY}`,
         },
         body: JSON.stringify({
-          prompt: query,
+          prompt: `${query} - URL: ${url}`,
           model: selectedModel,
-          webContext: { url, content },
+          useTools: true,
           messages: [
-            { role: 'user', content: query }
+            {
+              role: 'system',
+              content: 'Kamu adalah asisten AI yang membantu menganalisis konten website. Gunakan tool webFetch untuk membaca konten dari URL yang diberikan, kemudian jawab pertanyaan pengguna berdasarkan konten tersebut. Jawab dalam Bahasa Indonesia dengan informasi yang akurat.'
+            },
+            {
+              role: 'user',
+              content: `Baca konten dari ${url} dan jawab: ${query}`
+            }
           ]
         }),
       });
 
       if (!response.ok || !response.body) {
-        throw new Error('Failed to get AI response');
+        throw new Error('Failed to start stream');
       }
 
-      // Stream the response
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let fullContent = '';
+      let isLoading = true;
+
+      // Show simple loading indicator
+      updateMessageContent(messageId, '⏳ Membaca konten website...');
+      setIsGenerating(true);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -325,6 +261,7 @@ export const Chat = () => {
 
           const data = line.slice(6);
           if (data === '[DONE]') {
+            console.log('✅ Stream completed');
             fullContent += `\n\n---\n🌐 **Sumber:** ${url}`;
             updateMessageContent(messageId, fullContent);
             await saveMessage(chatId, fullContent, 'assistant');
@@ -334,21 +271,31 @@ export const Chat = () => {
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.type === 'content') {
+            
+            if (parsed.type === 'thinking') {
+              // Just keep loading, don't show thinking text
+            } else if (parsed.type === 'content') {
+              if (isLoading) {
+                isLoading = false;
+                fullContent = ''; // Clear loading indicator
+              }
               fullContent += parsed.content;
               updateMessageContent(messageId, fullContent);
+            } else if (parsed.type === 'tool_call') {
+              // Don't show tool call text, just keep loading
+            } else if (parsed.type === 'error') {
+              fullContent += `\n\n❌ Error: ${parsed.content}`;
+              updateMessageContent(messageId, fullContent);
             }
-          } catch {
-            // Ignore parse errors
+          } catch (e) {
+            console.error('Error parsing SSE:', e);
           }
         }
       }
 
-      // Final save
-      if (fullContent && !fullContent.includes('**Sumber:**')) {
+      if (!fullContent.includes('**Sumber:**')) {
         fullContent += `\n\n---\n🌐 **Sumber:** ${url}`;
       }
-      updateMessageContent(messageId, fullContent);
       await saveMessage(chatId, fullContent, 'assistant');
       setIsGenerating(false);
       
@@ -379,6 +326,7 @@ export const Chat = () => {
   const handleSendMessage = async (content: string, image?: File) => {
     console.log('🤖 Using model:', selectedModel);
     
+    // Check if user has subscription or is on free plan
     if (!profile) {
       toast({
         title: "Authentication Required",
@@ -388,14 +336,16 @@ export const Chat = () => {
       return;
     }
 
+    // Handle image uploads - automatically switch to vision model
     let finalContent = content;
     let targetModel = selectedModel;
     let base64Image = null;
     
     if (image) {
-      targetModel = "qwen3-vl:235b-cloud";
+      targetModel = "qwen3-vl:235b-cloud"; // Vision model
       console.log('🖼️ Image detected, switching to vision model:', targetModel);
       
+      // Convert image to base64
       base64Image = await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result as string);
@@ -406,6 +356,8 @@ export const Chat = () => {
       console.log('🖼️ Image converted to base64, length:', base64Image.length);
     }
 
+
+    // Ensure we have a current chat session
     let activeChatId = currentChatId;
     if (!activeChatId) {
       const title = finalContent.length > 50 ? finalContent.substring(0, 50) + "..." : finalContent;
@@ -420,9 +372,13 @@ export const Chat = () => {
       timestamp: new Date()
     };
 
+    // Add message to local state immediately for UI responsiveness
     addMessageToLocal(activeChatId, userMessage);
+    
+    // Save user message to database
     await saveMessage(activeChatId, finalContent, 'user');
     
+    // Update chat title if this is the first message
     if (!hasStartedChatting) {
       const title = finalContent.length > 50 ? finalContent.substring(0, 50) + "..." : finalContent;
       await updateChatTitle(activeChatId, title);
@@ -468,6 +424,7 @@ export const Chat = () => {
       
       else if (finalContent.toLowerCase().startsWith('/web ')) {
         const content = finalContent.substring(5).trim();
+        // Parse the web command: /web question url
         const urlRegex = /(https?:\/\/[^\s]+)/i;
         const urlMatch = content.match(urlRegex);
         
@@ -514,14 +471,17 @@ export const Chat = () => {
         }
         return;
       }
+      
 
-      // Regular chat
+      // Regular chat - Call Ollama via Edge Function
       try {
         setIsGenerating(true);
         
+        // Create abort controller for stopping generation
         const controller = new AbortController();
         setAbortController(controller);
         
+        // Create initial AI message
         const aiMessageId = generateUniqueId();
         const aiMessage: HistoryMessage = {
           id: aiMessageId,
@@ -529,166 +489,223 @@ export const Chat = () => {
           role: 'assistant',
           timestamp: new Date()
         };
+        
         addMessageToLocal(activeChatId, aiMessage);
-
-        const chatHistory = getChatHistoryForAI(activeChatId);
-        
-        const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-        const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-        
-        const requestBody: any = {
-          model: targetModel,
-          messages: [
-            ...chatHistory,
-            { role: 'user', content: finalContent }
-          ],
-          stream: true,
-        };
-
-        if (base64Image) {
-          requestBody.image = base64Image;
-        }
-
-        console.log('📤 Sending chat request:', { model: targetModel, messageCount: requestBody.messages.length });
-
-        const response = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SUPABASE_KEY}`,
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-        }
-
-        if (!response.body) {
-          throw new Error('No response body');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let streamedContent = '';
-        let thinkingContent = '';
-        let isThinking = false;
-
         setIsTyping(false);
 
-        while (true) {
-          const { done, value } = await reader.read();
-          
-          if (done) {
-            console.log('✅ Stream completed');
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-          
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            if (line.startsWith(':')) continue;
-            
-            if (!line.startsWith('data: ')) continue;
-            
-            const data = line.slice(6);
-            
-            if (data === '[DONE]') {
-              console.log('✅ Received [DONE] signal');
-              continue;
+        // For vision models, use direct prompt mode; for text models, use chat mode
+        const useDirectPrompt = base64Image !== null;
+        
+        let response: Response;
+        let responseData;
+        let fullResponse = '';
+        
+        if (useDirectPrompt) {
+          console.log('🤖 Using direct prompt mode for vision model:', targetModel);
+          // Direct prompt mode for vision
+          const { data, error } = await supabase.functions.invoke('ollama-proxy', {
+            body: { 
+              action: 'generate',
+              model: targetModel,
+              prompt: finalContent,
+              image: base64Image?.split(',')[1] || base64Image
             }
+          });
+          
+          if (error) {
+            throw new Error(`Edge Function error: ${error.message}`);
+          }
+          responseData = data;
+          
+          // Handle vision response (non-streaming)
+          if (responseData && responseData.response) {
+            fullResponse = responseData.response;
+            updateMessageContent(aiMessageId, fullResponse);
+          }
+        } else {
+          // Get chat history for AI context
+          const chatHistory = getChatHistoryForAI(activeChatId);
 
-            try {
-              const parsed = JSON.parse(data);
+          // Chat mode for text models - use streaming
+          console.log('🤖 Using chat mode with streaming for text model:', targetModel);
+          
+          // Use direct fetch for streaming support
+          const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+          const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+          
+          const streamResponse = await fetch(`${SUPABASE_URL}/functions/v1/ollama-proxy`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({
+              prompt: finalContent,
+              model: targetModel,
+              history: chatHistory.map(msg => ({
+                role: msg.role,
+                content: msg.content
+              }))
+            }),
+            signal: controller.signal,
+          });
+          
+          if (!streamResponse.ok) {
+            const errorData = await streamResponse.json().catch(() => ({}));
+            
+            // Handle premium model limit error
+            if (streamResponse.status === 403 && errorData.details?.includes('premium model request limit')) {
+              throw new Error('PREMIUM_LIMIT_REACHED');
+            }
+            
+            throw new Error(`Streaming error: ${streamResponse.status}`);
+          }
+          
+          // Handle streaming response
+          const reader = streamResponse.body?.getReader();
+          const decoder = new TextDecoder();
+          
+          if (!reader) {
+            throw new Error('No stream reader available');
+          }
+          
+          let buffer = '';
+          let isDone = false;
+          
+          console.log('🚀 Starting to read stream...');
+          
+          while (!isDone) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log('📡 Stream reader finished, total response length:', fullResponse.length);
+              break;
+            }
+            
+            const chunk = decoder.decode(value, { stream: true });
+            console.log('📦 Received chunk, size:', chunk.length);
+            buffer += chunk;
+            
+            // Split by newlines to process complete JSON objects
+            const lines = buffer.split('\n');
+            // Keep the last incomplete line in the buffer
+            buffer = lines.pop() || '';
+            
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (!trimmedLine) continue;
               
-              if (parsed.type === 'thinking') {
-                if (!isThinking) {
-                  isThinking = true;
-                  thinkingContent = '💭 **Berpikir...**\n\n';
-                }
-                thinkingContent += parsed.content;
-                updateMessageContent(aiMessageId, thinkingContent + '\n\n---\n\n' + streamedContent);
-              } else if (parsed.type === 'content') {
-                if (isThinking && !streamedContent) {
-                  streamedContent = '💡 **Jawaban:**\n\n';
-                }
-                streamedContent += parsed.content;
+              try {
+                const data = JSON.parse(trimmedLine);
+                console.log('📨 Parsed data:', { 
+                  hasMessage: !!data.message, 
+                  hasContent: !!data.message?.content,
+                  contentLength: data.message?.content?.length || 0,
+                  done: data.done 
+                });
                 
-                if (thinkingContent) {
-                  updateMessageContent(aiMessageId, thinkingContent + '\n\n---\n\n' + streamedContent);
-                } else {
-                  updateMessageContent(aiMessageId, streamedContent);
+                // Ollama Cloud streaming format
+                if (data.message?.content && data.message.content.length > 0) {
+                  const newContent = data.message.content;
+                  fullResponse += newContent;
+                  console.log('✍️ Added content, total length now:', fullResponse.length);
+                  
+                  // Update UI in real-time
+                  updateMessageContent(aiMessageId, fullResponse);
                 }
-              } else if (parsed.type === 'error') {
-                console.error('Stream error:', parsed.content);
-                streamedContent += `\n\n❌ Error: ${parsed.content}`;
-                updateMessageContent(aiMessageId, streamedContent);
+                
+                // Check if streaming is complete
+                if (data.done === true) {
+                  console.log('✅ Streaming marked as done, final length:', fullResponse.length);
+                  isDone = true;
+                  break;
+                }
+              } catch (e) {
+                // Log parsing errors for debugging
+                if (trimmedLine.length > 0) {
+                  console.error('❌ Failed to parse JSON line:', {
+                    lineStart: trimmedLine.substring(0, 100),
+                    error: e instanceof Error ? e.message : 'Unknown error'
+                  });
+                }
               }
-            } catch (parseError) {
-              // Ignore parse errors
             }
           }
+          
+          // Process any remaining buffer
+          if (buffer.trim()) {
+            try {
+              const data = JSON.parse(buffer.trim());
+              if (data.message?.content && data.message.content.length > 0) {
+                fullResponse += data.message.content;
+                console.log('📝 Added final buffer content, total length:', fullResponse.length);
+                updateMessageContent(aiMessageId, fullResponse);
+              }
+            } catch (e) {
+              console.error('❌ Failed to parse final buffer:', e);
+            }
+          }
+          
+          console.log('🏁 Stream processing complete. Final response length:', fullResponse.length);
+          
+          // Ensure we have some response
+          if (!fullResponse || fullResponse.trim().length === 0) {
+            console.error('❌ Empty response received from AI');
+            throw new Error('AI tidak memberikan respons. Ini mungkin karena:\n1. Konten tidak relevan dengan model\n2. Server AI sedang sibuk\n3. Model perlu restart\n\nSilakan coba lagi atau gunakan model lain.');
+          }
+          
+          console.log('✅ Successfully received response, length:', fullResponse.length);
         }
 
-        // Save the final message
-        const finalMessage = thinkingContent 
-          ? thinkingContent + '\n\n---\n\n' + streamedContent 
-          : streamedContent;
-        
-        if (finalMessage.trim()) {
-          await saveMessage(activeChatId, finalMessage, 'assistant');
+        // Save the complete AI response to database
+        if (fullResponse) {
+          await saveMessage(activeChatId, fullResponse, 'assistant');
         }
 
-        setAbortController(null);
-        setIsGenerating(false);
-
-      } catch (error: any) {
-        if (error.name === 'AbortError') {
-          console.log('Request was aborted');
-          setIsGenerating(false);
-          setIsTyping(false);
-          return;
+        // No credit deduction needed - subscription based
+      } catch (fetchError) {
+        console.error('🔴 Edge Function error:', fetchError);
+        
+        // Show user-friendly error message
+        let errorMsg = 'Tidak dapat terhubung ke AI. ';
+        
+        if (fetchError.message === 'PREMIUM_LIMIT_REACHED') {
+          errorMsg = '⚠️ **Limit Model Premium Tercapai**\n\nAnda telah mencapai batas penggunaan model premium. Silakan:\n\n1. Gunakan model gratis (llama3.3, qwen3, dll)\n2. Atau upgrade ke paket berbayar untuk akses unlimited\n\nUbah model di sidebar kiri atau tunggu hingga limit reset.';
+        } else if (fetchError.message.includes('502')) {
+          errorMsg += 'Server AI sedang bermasalah. Silakan coba lagi dalam beberapa saat.';
+        } else if (fetchError.message.includes('timeout')) {
+          errorMsg += 'Koneksi timeout. Silakan coba lagi.';
+        } else if (fetchError.message.includes('tidak ada respons')) {
+          errorMsg += 'AI tidak memberikan respons. Silakan coba lagi.';
+        } else {
+          errorMsg += 'Silakan coba lagi atau gunakan /cari [query] untuk pencarian web.';
         }
-        
-        console.error('Error calling Ollama:', error);
-        
-        const errorMessage = error.message || 'Terjadi kesalahan saat memproses permintaan.';
-        
-        const aiMessage: HistoryMessage = {
-          id: generateUniqueId(),
-          content: `❌ Error: ${errorMessage}`,
-          role: 'assistant',
-          timestamp: new Date()
-        };
-        addMessageToLocal(activeChatId, aiMessage);
-        await saveMessage(activeChatId, aiMessage.content, 'assistant');
         
         toast({
           title: "Error",
-          description: errorMessage,
-          variant: "destructive",
+          description: errorMsg,
+          variant: "destructive"
         });
-        
+      } finally {
         setIsGenerating(false);
-        setIsTyping(false);
+        setAbortController(null);
       }
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error('Error calling Ollama API:', error);
+      const activeChatIdForError = currentChatId || await createNewChatSession("Error");
+      if (activeChatIdForError) {
+        const errorMessage: HistoryMessage = {
+          id: generateUniqueId(),
+          content: `❌ Maaf, API LLM sedang mengalami error.
+
+💡 **Alternative:** Use /cari [query] for web search instead!`,
+          role: 'assistant',
+          timestamp: new Date()
+        };
+        addMessageToLocal(activeChatIdForError, errorMessage);
+        await saveMessage(activeChatIdForError, errorMessage.content, 'assistant');
+      }
       setIsTyping(false);
-      setIsGenerating(false);
-      
-      toast({
-        title: "Error",
-        description: "Failed to send message. Please try again.",
-        variant: "destructive",
-      });
     }
   };
 
@@ -696,135 +713,248 @@ export const Chat = () => {
     const newChatId = await createNewChatSession("New Chat");
     if (newChatId) {
       setHasStartedChatting(false);
+      setSidebarOpen(false);
     }
   };
 
   const handleSelectChat = (chatId: string) => {
     setCurrentChatId(chatId);
-    setHasStartedChatting(true);
-    if (window.innerWidth < 768) {
-      setSidebarOpen(false);
-    }
+    const selectedChat = chatSessions.find(chat => chat.id === chatId);
+    setHasStartedChatting(selectedChat ? selectedChat.messages.length > 0 : false);
+    setSidebarOpen(false);
+  };
+
+  const handleEditChat = async (chatId: string, newTitle: string) => {
+    await updateChatTitle(chatId, newTitle);
   };
 
   const handleDeleteChat = async (chatId: string) => {
     await deleteChatSession(chatId);
+    // If we deleted the current chat, create a new one
+    if (currentChatId === chatId) {
+      await handleNewChat();
+    }
   };
 
-  const handleLogout = async () => {
-    await signOut();
+  const stopGeneration = async () => {
+    if (abortController) {
+      abortController.abort();
+      setAbortController(null);
+      setIsGenerating(false);
+      setIsTyping(false);
+      
+      // Add a message indicating that generation was stopped
+      const activeChatIdForStop = currentChatId || await createNewChatSession("Stopped");
+      if (activeChatIdForStop) {
+        const stopMessage: HistoryMessage = {
+          id: generateUniqueId(),
+          content: "🛑 **Generation stopped by user**",
+          role: 'assistant',
+          timestamp: new Date()
+        };
+        
+        addMessageToLocal(activeChatIdForStop, stopMessage);
+        await saveMessage(activeChatIdForStop, stopMessage.content, 'assistant');
+      }
+    }
+  };
+
+  const handleToolUse = async (tool: 'search' | 'web' | 'document', query: string, document?: File) => {
+    // This function is now mostly for legacy support
+    // The main RAG functionality is handled in handleSendMessage
     toast({
-      title: "Logged Out",
-      description: "You have been successfully logged out.",
+      title: "Info",
+      description: "Gunakan perintah /cari atau /web di chat untuk menggunakan alat RAG",
     });
   };
 
+  if (!profile) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold mb-2">Please log in to continue</h2>
+          <Button onClick={() => window.location.href = '/auth'}>
+            Go to Login
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+          <p>Loading chat history...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar */}
-      <div className={`${sidebarOpen ? 'w-72 md:w-80' : 'w-0'} transition-all duration-300 overflow-hidden border-r border-border bg-card flex-shrink-0`}>
-        <ChatSidebar 
-          chatSessions={chatSessions}
-          currentChatId={currentChatId || undefined}
-          onSelectChat={handleSelectChat}
-          onNewChat={handleNewChat}
-          onDeleteChat={handleDeleteChat}
-          onEditChat={async (chatId, newTitle) => await updateChatTitle(chatId, newTitle)}
-        />
+      {/* Sidebar with proper mobile handling */}
+      <div className={`
+        ${sidebarOpen ? 'w-64' : 'w-0'} 
+        transition-all duration-300 ease-in-out 
+        bg-background border-r border-border 
+        flex-shrink-0 overflow-hidden
+        animate-slide-in
+        lg:relative fixed lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        top-0 left-0 h-full z-50
+      `}>
+        <div className={`w-64 h-full ${sidebarOpen ? 'animate-fade-in' : 'animate-fade-out'}`}>
+          <ChatSidebar
+            currentChatId={currentChatId}
+            onNewChat={handleNewChat}
+            onSelectChat={handleSelectChat}
+            onDeleteChat={handleDeleteChat}
+            onEditChat={handleEditChat}
+            chatSessions={chatSessions}
+          />
+        </div>
       </div>
-
-      {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      
+      {/* Overlay for mobile */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/30 z-40 lg:hidden animate-fade-in"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      
+      <div className="flex-1 flex flex-col">
         {/* Header */}
-        <div className="bg-card/80 backdrop-blur-sm border-b border-border px-3 md:px-6 py-3 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="text-muted-foreground hover:text-foreground flex-shrink-0"
-            >
-              <Menu className="h-5 w-5" />
-            </Button>
-            
-            <div className="flex items-center gap-2 min-w-0">
-              <img src={firefliesLogo} alt="FireFlies" className="h-6 w-6 md:h-8 md:w-8 flex-shrink-0" />
-              <span className="font-bold text-base md:text-lg text-foreground hidden sm:inline truncate">FireFlies</span>
+        <header className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <div className="flex items-center justify-between p-2 sm:p-4">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="hover-scale transition-all duration-200 hover:bg-accent/50 h-8 w-8 p-0"
+              >
+                <Menu className="w-4 h-4" />
+              </Button>
+              <div className="flex items-center gap-2 animate-fade-in">
+                <img src={firefliesLogo} alt="FireFlies" className="w-6 h-6 sm:w-8 sm:h-8 hover-scale" />
+                <h1 className="text-lg sm:text-xl font-semibold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent">
+                  FireFlies
+                </h1>
+              </div>
             </div>
             
-            <div className="flex-shrink-0 min-w-0 max-w-[140px] md:max-w-[200px]">
-              <ModelSelector />
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
-            {profile && (
-              <div className="hidden md:flex items-center gap-2 text-xs md:text-sm text-muted-foreground">
-                <span className="px-2 py-1 bg-primary/10 text-primary rounded-full truncate max-w-[100px]">
-                  {profile.subscription_plan || 'Free'}
+            <div className="flex items-center gap-1 sm:gap-4">
+              {/* Subscription Display - Hide on mobile */}
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-lg">
+                <CreditCard className="w-4 h-4 text-primary" />
+                <span className="text-sm font-medium">
+                  {profile?.subscription_plan === 'pro' ? 'Pro Plan' : 'Free Plan'}
                 </span>
               </div>
-            )}
-            
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => window.location.href = '/pricing'}
-              className="text-muted-foreground hover:text-foreground"
-              title="Upgrade Plan"
-            >
-              <CreditCard className="h-4 w-4 md:h-5 md:w-5" />
-            </Button>
-            
-            <ThemeToggle />
-            
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleLogout}
-              className="text-muted-foreground hover:text-destructive"
-              title="Logout"
-            >
-              <LogOut className="h-4 w-4 md:h-5 md:w-5" />
-            </Button>
-          </div>
-        </div>
-
-        {/* Messages Area */}
-        <ScrollArea className="flex-1 px-2 md:px-4 py-4">
-          <div className="max-w-4xl mx-auto space-y-4">
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-[60vh] text-center px-4">
-                <img src={firefliesLogo} alt="FireFlies" className="h-16 w-16 md:h-20 md:w-20 mb-4 opacity-50" />
-                <h2 className="text-xl md:text-2xl font-bold text-foreground mb-2">Selamat datang di FireFlies</h2>
-                <p className="text-sm md:text-base text-muted-foreground max-w-md">
-                  Mulai percakapan dengan mengetik pesan di bawah. Gunakan <code className="bg-muted px-1 rounded">/cari</code> untuk mencari informasi atau <code className="bg-muted px-1 rounded">/web</code> untuk menganalisis website.
-                </p>
+              
+              {/* Upgrade Button for Free Users in Header - Hide on mobile */}
+              {profile?.subscription_plan === 'free' && (
+                <Button
+                  onClick={() => window.open('/pricing', '_blank')}
+                  variant="default"
+                  size="sm"
+                  className="hidden sm:flex bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
+                >
+                  Upgrade
+                </Button>
+              )}
+              
+              {/* Model Selector */}
+              <ModelSelector />
+              
+              {/* User Info and Logout - Hide name on mobile */}
+              <div className="flex items-center gap-1 sm:gap-2">
+                <span className="hidden sm:inline text-sm text-muted-foreground">
+                  {profile?.full_name || profile?.email || 'User'}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={signOut}
+                  className="hover:bg-destructive/10 hover:text-destructive h-8 w-8 p-0"
+                >
+                  <LogOut className="w-4 h-4" />
+                </Button>
               </div>
-            ) : (
-              messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
-              ))
-            )}
-            
-            {isTyping && <TypingIndicator />}
+              
+              <ThemeToggle />
+            </div>
           </div>
-        </ScrollArea>
+        </header>
 
-        {/* Input Area */}
-        <div className="p-2 md:p-4 border-t border-border bg-card/50">
-          <div className="max-w-4xl mx-auto">
-            <ChatInput 
-              onSendMessage={handleSendMessage} 
-              disabled={loading}
-              isGenerating={isGenerating}
-              onStopGeneration={handleStopGeneration}
-            />
-          </div>
+        {/* Chat Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <ScrollArea className="flex-1 h-full">
+            <div className="max-w-4xl mx-auto p-4">
+              {messages.length === 0 && (
+                <div className="text-center py-12 px-6">
+                  <div className="flex justify-center mb-6">
+                    <img src={firefliesLogo} alt="Chat AI" className="w-20 h-20" />
+                  </div>
+                  <h2 className="text-3xl font-bold mb-4 text-foreground">
+                    Welcome to AI Chat
+                  </h2>
+                  <p className="text-muted-foreground text-lg mb-8">
+                    How can I help you today?
+                  </p>
+                  
+                  {/* Upgrade Button for Free Users */}
+                  {profile?.subscription_plan === 'free' && (
+                    <div className="mb-8">
+                      <Button
+                        onClick={() => window.open('/pricing', '_blank')}
+                        variant="default"
+                        size="lg"
+                        className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
+                      >
+                        Upgrade to Pro
+                      </Button>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto animate-fade-in">
+                    {[
+                      "Help me write a creative story",
+                      "Explain a complex topic simply", 
+                      "Code review and optimization",
+                      "Plan my next vacation"
+                    ].map((suggestion, index) => (
+                      <button
+                        key={index}
+                        onClick={() => handleSendMessage(suggestion)}
+                        className="p-4 text-left border border-border rounded-xl hover:bg-accent/50 transition-all duration-200 hover-scale animate-fade-in"
+                        style={{ animationDelay: `${index * 100}ms` }}
+                      >
+                        <span className="text-sm font-medium">{suggestion}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {messages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
+              ))}
+              
+              {isTyping && <TypingIndicator />}
+            </div>
+          </ScrollArea>
+
+          <ChatInput 
+            onSendMessage={handleSendMessage}
+            onToolUse={handleToolUse}
+            onStopGeneration={handleStopGeneration}
+            disabled={isTyping}
+            isGenerating={isGenerating}
+          />
         </div>
       </div>
     </div>
   );
 };
-
-export default Chat;
