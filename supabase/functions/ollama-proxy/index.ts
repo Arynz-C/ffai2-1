@@ -199,16 +199,19 @@ serve(async (req) => {
           },
         };
 
-        // Initialize conversation messages
-        let conversationMessages = messages.length > 0 ? [...messages] : [
-          { role: 'user', content: prompt }
-        ];
+        // Initialize conversation messages with system prompt
+        const systemMessage = {
+          role: 'system',
+          content: 'Kamu adalah asisten AI yang membantu pengguna dengan pencarian web. Gunakan tools webSearch untuk mencari informasi dan webFetch untuk membaca konten halaman web. Setelah mendapat hasil dari tools, WAJIB berikan jawaban lengkap dan informatif dalam Bahasa Indonesia berdasarkan informasi yang ditemukan. Jangan hanya menyebutkan sumber, tapi jelaskan isinya secara detail.'
+        };
+        
+        let conversationMessages = messages.length > 0 
+          ? [systemMessage, ...messages] 
+          : [systemMessage, { role: 'user', content: prompt }];
 
         // Tool execution loop
         let maxIterations = 5;
         let iteration = 0;
-        let collectedUrls: string[] = [];
-        let hasStreamedContent = false;
         
         // Create a TransformStream for streaming response
         const { readable, writable } = new TransformStream();
@@ -221,10 +224,6 @@ serve(async (req) => {
             while (iteration < maxIterations) {
               iteration++;
               console.log(`🔄 Tool calling iteration ${iteration}`);
-              console.log(`📤 Request iteration ${iteration}, tools enabled: ${iteration < 3}`);
-
-              // After 3 iterations, disable tools to force final response
-              const useTools = iteration < 3;
 
               const ollamaResponse = await fetch('https://ollama.com/api/chat', {
                 method: 'POST',
@@ -235,7 +234,7 @@ serve(async (req) => {
                 body: JSON.stringify({
                   model,
                   messages: conversationMessages,
-                  ...(useTools ? { tools: [webSearchTool, webFetchTool] } : {}),
+                  tools: [webSearchTool, webFetchTool],
                   stream: true,
                 })
               });
@@ -277,7 +276,6 @@ serve(async (req) => {
 
                       // Stream content if present
                       if (json.message.content) {
-                        hasStreamedContent = true;
                         accumulatedContent += json.message.content;
                         await writer.write(encoder.encode(`data: ${JSON.stringify({
                           type: 'content',
@@ -298,19 +296,12 @@ serve(async (req) => {
                   }
                 }
               }
-              
-              console.log(`Response headers:`, { contentType: 'application/json', status: 200, ok: true });
 
-              // If no tool calls or we've disabled tools, we're done
+              // If no tool calls, we're done - but make sure we have content
               if (!hasToolCalls) {
-                // Add sources if we have collected URLs
-                if (collectedUrls.length > 0) {
-                  const sourceText = '\n\n---\n📚 **Sumber:**\n' + collectedUrls.map((u, i) => `${i+1}. ${u}`).join('\n');
-                  await writer.write(encoder.encode(`data: ${JSON.stringify({
-                    type: 'content',
-                    content: sourceText
-                  })}\n\n`));
-                }
+                // If we have accumulated content from this final response, it was already streamed
+                // Just signal done
+                console.log(`✅ Final response complete. Content length: ${accumulatedContent.length}`);
                 await writer.write(encoder.encode(`data: [DONE]\n\n`));
                 break;
               }
@@ -395,11 +386,6 @@ serve(async (req) => {
                       console.error(`❌ webFetch failed:`, fetchError);
                       toolResult = { error: `Fetch failed: ${fetchError.message}` };
                     } else {
-                      // Collect URL for sources
-                      if (!collectedUrls.includes(args.url)) {
-                        collectedUrls.push(args.url);
-                      }
-                      
                       toolResult = {
                         url: args.url,
                         content: fetchData.content || '',

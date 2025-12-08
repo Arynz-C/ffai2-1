@@ -827,40 +827,40 @@ export const Chat = () => {
       <div className="flex-1 flex flex-col">
         {/* Header */}
         <header className="border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-          <div className="flex items-center justify-between p-2 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex items-center gap-3">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="hover-scale transition-all duration-200 hover:bg-accent/50 h-8 w-8 p-0"
+                className="hover-scale transition-all duration-200 hover:bg-accent/50"
               >
                 <Menu className="w-4 h-4" />
               </Button>
               <div className="flex items-center gap-2 animate-fade-in">
-                <img src={firefliesLogo} alt="FireFlies" className="w-6 h-6 sm:w-8 sm:h-8 hover-scale" />
-                <h1 className="text-lg sm:text-xl font-semibold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent">
+                <img src={firefliesLogo} alt="FireFlies" className="w-8 h-8 hover-scale" />
+                <h1 className="text-xl font-semibold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent">
                   FireFlies
                 </h1>
               </div>
             </div>
             
-            <div className="flex items-center gap-1 sm:gap-4">
-              {/* Subscription Display - Hide on mobile */}
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-lg">
+            <div className="flex items-center gap-4">
+              {/* Subscription Display */}
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 rounded-lg">
                 <CreditCard className="w-4 h-4 text-primary" />
                 <span className="text-sm font-medium">
                   {profile?.subscription_plan === 'pro' ? 'Pro Plan' : 'Free Plan'}
                 </span>
               </div>
               
-              {/* Upgrade Button for Free Users in Header - Hide on mobile */}
+              {/* Upgrade Button for Free Users in Header */}
               {profile?.subscription_plan === 'free' && (
                 <Button
                   onClick={() => window.open('/pricing', '_blank')}
                   variant="default"
                   size="sm"
-                  className="hidden sm:flex bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
+                  className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
                 >
                   Upgrade
                 </Button>
@@ -869,16 +869,16 @@ export const Chat = () => {
               {/* Model Selector */}
               <ModelSelector />
               
-              {/* User Info and Logout - Hide name on mobile */}
-              <div className="flex items-center gap-1 sm:gap-2">
-                <span className="hidden sm:inline text-sm text-muted-foreground">
+              {/* User Info and Logout */}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">
                   {profile?.full_name || profile?.email || 'User'}
                 </span>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={signOut}
-                  className="hover:bg-destructive/10 hover:text-destructive h-8 w-8 p-0"
+                  className="hover:bg-destructive/10 hover:text-destructive"
                 >
                   <LogOut className="w-4 h-4" />
                 </Button>
